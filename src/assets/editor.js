@@ -25,51 +25,56 @@
 
   var options = { lineNumbers: false, showWhitespace: false };
 
-  // Caret position as a character index over the editor's text nodes. Range
-  // .toString() skips block boundaries, so the same "space" is used to restore.
-  function caretOffset() {
+  function collapseTo(node, offset) {
+    var r = document.createRange();
+    r.setStart(node, offset);
+    r.collapse(true);
     var sel = window.getSelection();
-    if (!sel.rangeCount) return -1;
-    var r = sel.getRangeAt(0);
-    if (!editor.contains(r.startContainer)) return -1;
-    var pre = document.createRange();
-    pre.selectNodeContents(editor);
-    pre.setEnd(r.startContainer, r.startOffset);
-    return pre.toString().length;
+    sel.removeAllRanges();
+    sel.addRange(r);
   }
 
-  function applyCaretOffset(index) {
-    var walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+  // Caret position as {line, offset}: which line box, and how many characters
+  // into it. A flat document-wide index cannot tell two blank lines apart -
+  // they contain no text - so restoring one would jump to the previous line.
+  function caretPos() {
+    var sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    var r = sel.getRangeAt(0);
+    if (!editor.contains(r.startContainer)) return null;
+    if (r.startContainer === editor) return { line: r.startOffset, offset: 0 };
+    var line = r.startContainer;
+    while (line.parentNode && line.parentNode !== editor) line = line.parentNode;
+    if (line.parentNode !== editor) return null;
+    var pre = document.createRange();
+    pre.selectNodeContents(line);
+    pre.setEnd(r.startContainer, r.startOffset);
+    return {
+      line: Array.prototype.indexOf.call(editor.childNodes, line),
+      offset: pre.toString().length
+    };
+  }
+
+  function applyCaretPos(pos) {
+    var line = editor.childNodes[pos.line];
+    if (!line) { caretToStart(); return; }
+    if (line.nodeType !== 1) { collapseTo(line, Math.min(pos.offset, line.data.length)); return; }
+    var walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT, null);
     var seen = 0, node, last = null;
     while ((node = walker.nextNode())) {
+      var end = seen + node.data.length;
       // Landing exactly on the end of a marker span would put the caret inside
       // it, so the next character typed would be swallowed by the marker again.
       // Prefer the following text node in that case.
-      if (index === seen + node.data.length && isMarker(node.parentNode)) {
-        seen += node.data.length;
-        last = node;
+      if (pos.offset === end && isMarker(node.parentNode)) {
+        seen = end; last = node;
         continue;
       }
-      if (index <= seen + node.data.length) {
-        var r = document.createRange();
-        r.setStart(node, index - seen);
-        r.collapse(true);
-        var sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(r);
-        return;
-      }
-      seen += node.data.length;
-      last = node;
+      if (pos.offset <= end) { collapseTo(node, pos.offset - seen); return; }
+      seen = end; last = node;
     }
-    if (last) {
-      var end = document.createRange();
-      end.setStart(last, last.data.length);
-      end.collapse(true);
-      var s2 = window.getSelection();
-      s2.removeAllRanges();
-      s2.addRange(end);
-    }
+    if (last) collapseTo(last, last.data.length);
+    else collapseTo(line, 0);          // blank line: no text node to land in
   }
 
   // Run a DOM rewrite without moving the caret. A live selection is left alone
@@ -79,9 +84,9 @@
   function withCaret(mutate) {
     var sel = window.getSelection();
     if (sel.rangeCount && !sel.getRangeAt(0).collapsed) return false;
-    var offset = caretOffset();
+    var pos = caretPos();
     if (!mutate()) return false;
-    if (offset >= 0) applyCaretOffset(offset);
+    if (pos) applyCaretPos(pos);
     return true;
   }
 
@@ -131,7 +136,19 @@
   // so wrapping cannot reflow the text.
   function addMarkers(line) {
     var text = line.textContent;
-    if (!text) return false;               // empty line: just a <br>, leave it
+    if (!text) {
+      // Pressing Enter at the end of a line that finished with a whitespace
+      // marker makes WebKit carry the span onto the new line and nest the <br>
+      // inside it: <div><span class="tate-sp"><br></span></div>. The blank-line
+      // rules key on a direct-child <br>, so the ⏎ marker would fall back into
+      // the flow and the line would take two columns. Unwrap it in place - that
+      // keeps the <br> node itself, and with it the caret.
+      var stray = line.querySelector(MARKER_SELECTOR);
+      if (!stray) return false;            // genuinely just a <br>, leave it
+      while (stray.firstChild) line.insertBefore(stray.firstChild, stray);
+      line.removeChild(stray);
+      return true;
+    }
     var frag = document.createDocumentFragment();
     var buf = "";
     function flush() {
