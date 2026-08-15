@@ -165,6 +165,11 @@ class TateNoteWindow(Gtk.ApplicationWindow):
             item = Gtk.CheckMenuItem.new_with_label(label)
             item.set_active(self.settings[key])
             item.connect("toggled", self._on_setting_toggled, key)
+            # Toggling must not dismiss the menu - these are three independent
+            # options and one usually wants to set more than one. Handling the
+            # release ourselves keeps the menu shell from activating the item
+            # and deactivating the menu with it.
+            item.connect("button-release-event", self._on_setting_clicked)
             menu.append(item)
             self.setting_checks[key] = item
 
@@ -173,6 +178,10 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.settings_button = button
         self.settings_menu = menu
         header.pack_end(button)
+
+    def _on_setting_clicked(self, item, _event):
+        item.set_active(not item.get_active())
+        return True   # swallow the release so the menu stays open
 
     def _on_setting_toggled(self, check, key):
         if self.settings[key] == check.get_active():
