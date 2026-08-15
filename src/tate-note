@@ -149,26 +149,29 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         )
         button.set_tooltip_text("設定")
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        for margin in ("top", "bottom", "start", "end"):
-            getattr(box, "set_margin_" + margin)(14)
-
+        # A Gtk.Menu, not a Gtk.Popover with check buttons. The popover is drawn
+        # over the WebKitWebView, which owns a native subwindow and takes the
+        # first button press for itself: the click only moved the keyboard focus
+        # onto the check button and the toggle was swallowed, so the first click
+        # on any row appeared to do nothing. A menu runs in its own toplevel with
+        # its own pointer grab, so every click reaches the item.
+        menu = Gtk.Menu()
         self.setting_checks = {}
         for key, label in (
             ("line_numbers", "行番号を表示"),
             ("count_newlines", "改行を文字数に含める"),
             ("show_whitespace", "空白・タブ・改行を表示"),
         ):
-            check = Gtk.CheckButton(label=label)
-            check.set_active(self.settings[key])
-            check.connect("toggled", self._on_setting_toggled, key)
-            box.pack_start(check, False, False, 0)
-            self.setting_checks[key] = check
+            item = Gtk.CheckMenuItem.new_with_label(label)
+            item.set_active(self.settings[key])
+            item.connect("toggled", self._on_setting_toggled, key)
+            menu.append(item)
+            self.setting_checks[key] = item
 
-        popover = Gtk.Popover()
-        popover.add(box)
-        box.show_all()
-        button.set_popover(popover)
+        menu.show_all()
+        button.set_popup(menu)
+        self.settings_button = button
+        self.settings_menu = menu
         header.pack_end(button)
 
     def _on_setting_toggled(self, check, key):
