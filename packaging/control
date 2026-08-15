@@ -1,0 +1,13 @@
+Package: tate-note
+Version: __VERSION__
+Section: editors
+Priority: optional
+Architecture: all
+Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0
+Maintainer: d.suganuma <ds20100531@gmail.com>
+Installed-Size: __SIZE__
+Description: Vertical writing (tategaki) text editor
+ A lightweight desktop text editor for Ubuntu that renders text
+ top-to-bottom, right-to-left in traditional Japanese vertical
+ writing (tategaki) style. Supports opening and saving plain text
+ files.

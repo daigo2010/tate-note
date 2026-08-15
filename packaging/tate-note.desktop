@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=縦書きノート
+Name[en]=Tate Note
+Comment=縦書きテキストエディタ
+Comment[en]=Vertical writing text editor
+Exec=tate-note %f
+Icon=tate-note
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;
+StartupWMClass=tate-note

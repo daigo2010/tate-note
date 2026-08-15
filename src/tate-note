@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+try:
+    gi.require_version("WebKit2", "4.1")
+except ValueError:
+    gi.require_version("WebKit2", "4.0")
+
+from gi.repository import Gdk, Gio, GLib, Gtk, WebKit2
+
+APP_ID = "net.tate_note.TateNote"
+INSTALLED_ASSETS = "/usr/share/tate-note/assets"
+DEV_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+ASSETS_DIR = DEV_ASSETS if os.path.isdir(DEV_ASSETS) else INSTALLED_ASSETS
+
+
+class TateNoteWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="縦書きノート")
+        self.set_default_size(760, 640)
+
+        self.current_path = None
+        self.pending_save_path = None
+        self.modified = False
+
+        self._build_header_bar()
+
+        self.webview = WebKit2.WebView()
+        self.webview.set_settings(self._make_settings())
+
+        manager = self.webview.get_user_content_manager()
+        manager.register_script_message_handler("app")
+        manager.connect("script-message-received::app", self._on_js_message)
+
+        self.webview.load_uri("file://" + os.path.join(ASSETS_DIR, "editor.html"))
+
+        self.add(self.webview)
+        self.connect("delete-event", self._on_delete_event)
+
+    def _make_settings(self):
+        settings = WebKit2.Settings()
+        settings.set_enable_developer_extras(False)
+        settings.set_default_charset("utf-8")
+        return settings
+
+    def _build_header_bar(self):
+        header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+        header.set_title("縦書きノート")
+        self.set_titlebar(header)
+
+        new_btn = Gtk.Button.new_from_icon_name("document-new-symbolic", Gtk.IconSize.BUTTON)
+        new_btn.set_tooltip_text("新規 (Ctrl+N)")
+        new_btn.connect("clicked", lambda _b: self.action_new())
+        header.pack_start(new_btn)
+
+        open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic", Gtk.IconSize.BUTTON)
+        open_btn.set_tooltip_text("開く (Ctrl+O)")
+        open_btn.connect("clicked", lambda _b: self.action_open())
+        header.pack_start(open_btn)
+
+        save_btn = Gtk.Button.new_from_icon_name("document-save-symbolic", Gtk.IconSize.BUTTON)
+        save_btn.set_tooltip_text("保存 (Ctrl+S)")
+        save_btn.connect("clicked", lambda _b: self.action_save())
+        header.pack_start(save_btn)
+
+        save_as_btn = Gtk.Button.new_from_icon_name("document-save-as-symbolic", Gtk.IconSize.BUTTON)
+        save_as_btn.set_tooltip_text("名前を付けて保存 (Ctrl+Shift+S)")
+        save_as_btn.connect("clicked", lambda _b: self.action_save_as())
+        header.pack_start(save_as_btn)
+
+        zoom_out = Gtk.Button.new_from_icon_name("zoom-out-symbolic", Gtk.IconSize.BUTTON)
+        zoom_out.set_tooltip_text("文字を小さく")
+        zoom_out.connect("clicked", lambda _b: self.action_zoom(-2))
+        header.pack_end(zoom_out)
+
+        zoom_in = Gtk.Button.new_from_icon_name("zoom-in-symbolic", Gtk.IconSize.BUTTON)
+        zoom_in.set_tooltip_text("文字を大きく")
+        zoom_in.connect("clicked", lambda _b: self.action_zoom(2))
+        header.pack_end(zoom_in)
+
+        self.count_label = Gtk.Label(label="0字")
+        self.count_label.set_margin_start(6)
+        self.count_label.set_margin_end(6)
+        header.pack_end(self.count_label)
+
+        self.header = header
+        self._update_title()
+
+        accel = Gtk.AccelGroup()
+        self.add_accel_group(accel)
+        self._add_accel(accel, "n", lambda: self.action_new())
+        self._add_accel(accel, "o", lambda: self.action_open())
+        self._add_accel(accel, "s", lambda: self.action_save())
+        self._add_accel(accel, "s", lambda: self.action_save_as(), shift=True)
+
+    def _add_accel(self, accel, key, callback, shift=False):
+        mods = Gdk.ModifierType.CONTROL_MASK
+        if shift:
+            mods |= Gdk.ModifierType.SHIFT_MASK
+        keyval = Gdk.keyval_from_name(key)
+        accel.connect(keyval, mods, Gtk.AccelFlags.VISIBLE, lambda *_a: callback())
+
+    def _run_js(self, script):
+        self.webview.evaluate_javascript(script, -1, None, None, None, None, None)
+
+    def _update_title(self):
+        name = os.path.basename(self.current_path) if self.current_path else "無題"
+        mark = " *" if self.modified else ""
+        self.header.set_title("縦書きノート")
+        self.header.set_subtitle(name + mark)
+
+    def _on_js_message(self, _manager, result):
+        payload = json.loads(result.get_js_value().to_string())
+        kind = payload.get("type")
+        if kind == "count":
+            self.count_label.set_text("{}字".format(payload.get("count", 0)))
+        elif kind == "modified":
+            if not self.modified:
+                self.modified = True
+                self._update_title()
+        elif kind == "content":
+            self._write_content(payload.get("text", ""))
+
+    def _write_content(self, text):
+        path = self.pending_save_path
+        self.pending_save_path = None
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError as e:
+            self._error_dialog("保存に失敗しました: {}".format(e))
+            return
+        self.current_path = path
+        self.modified = False
+        self._update_title()
+
+    def _error_dialog(self, message):
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=message,
+        )
+        dialog.run()
+        dialog.destroy()
+
+    def _confirm_discard(self):
+        if not self.modified:
+            return True
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="変更を保存しますか？",
+        )
+        dialog.add_buttons(
+            "破棄", Gtk.ResponseType.NO,
+            "キャンセル", Gtk.ResponseType.CANCEL,
+            "保存", Gtk.ResponseType.YES,
+        )
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.YES:
+            self.action_save()
+            return True
+        return response == Gtk.ResponseType.NO
+
+    def action_new(self):
+        if not self._confirm_discard():
+            return
+        self._run_js("window.setContent('')")
+        self.current_path = None
+        self.modified = False
+        self._update_title()
+
+    def action_open(self):
+        if not self._confirm_discard():
+            return
+        dialog = Gtk.FileChooserDialog(
+            title="ファイルを開く",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        dialog.add_buttons(
+            "キャンセル", Gtk.ResponseType.CANCEL,
+            "開く", Gtk.ResponseType.OK,
+        )
+        text_filter = Gtk.FileFilter()
+        text_filter.set_name("テキストファイル (*.txt)")
+        text_filter.add_pattern("*.txt")
+        dialog.add_filter(text_filter)
+        all_filter = Gtk.FileFilter()
+        all_filter.set_name("すべてのファイル")
+        all_filter.add_pattern("*")
+        dialog.add_filter(all_filter)
+
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+            self._load_file(path)
+        dialog.destroy()
+
+    def _load_file(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            self._error_dialog("開けませんでした: {}".format(e))
+            return
+        self._run_js("window.setContent({})".format(json.dumps(text)))
+        self.current_path = path
+        self.modified = False
+        self._update_title()
+
+    def action_save(self):
+        if not self.current_path:
+            self.action_save_as()
+            return
+        self.pending_save_path = self.current_path
+        self._run_js("window.requestSave()")
+
+    def action_save_as(self):
+        dialog = Gtk.FileChooserDialog(
+            title="名前を付けて保存",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(
+            "キャンセル", Gtk.ResponseType.CANCEL,
+            "保存", Gtk.ResponseType.OK,
+        )
+        dialog.set_do_overwrite_confirmation(True)
+        dialog.set_current_name(
+            os.path.basename(self.current_path) if self.current_path else "無題.txt"
+        )
+        if self.current_path:
+            dialog.set_current_folder(os.path.dirname(self.current_path))
+
+        if dialog.run() == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+            if not path.lower().endswith(".txt"):
+                path += ".txt"
+            self.pending_save_path = path
+            self._run_js("window.requestSave()")
+        dialog.destroy()
+
+    def action_zoom(self, delta):
+        self._run_js(
+            "window.setFontSize(Math.max(12, Math.min(64, window.getFontSize() + {})))".format(delta)
+        )
+
+    def _on_delete_event(self, _widget, _event):
+        return not self._confirm_discard()
+
+
+class TateNoteApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        self.window = None
+        self._pending_open_path = None
+
+    def do_activate(self):
+        if not self.window:
+            self.window = TateNoteWindow(self)
+            if self._pending_open_path:
+                self.window._load_file(self._pending_open_path)
+                self._pending_open_path = None
+        self.window.present()
+
+    def do_open(self, files, _n_files, _hint):
+        self._pending_open_path = files[0].get_path()
+        self.activate()
+
+
+def main():
+    app = TateNoteApp()
+    return app.run(sys.argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
