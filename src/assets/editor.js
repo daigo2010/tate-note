@@ -1,6 +1,6 @@
 (function () {
   var editor = document.getElementById("editor");
-  editor.setAttribute("data-placeholder", "ここに書き始めてください…");
+  editor.setAttribute("data-placeholder", "ここから書き始めてください");
 
   function post(msg) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.app) {
@@ -21,6 +21,161 @@
     sel.addRange(range);
   }
 
+  // ---- display options (driven from the GTK settings menu) -----------------
+
+  var options = { lineNumbers: false, showWhitespace: false };
+
+  // Caret position as a character index over the editor's text nodes. Range
+  // .toString() skips block boundaries, so the same "space" is used to restore.
+  function caretOffset() {
+    var sel = window.getSelection();
+    if (!sel.rangeCount) return -1;
+    var r = sel.getRangeAt(0);
+    if (!editor.contains(r.startContainer)) return -1;
+    var pre = document.createRange();
+    pre.selectNodeContents(editor);
+    pre.setEnd(r.startContainer, r.startOffset);
+    return pre.toString().length;
+  }
+
+  function applyCaretOffset(index) {
+    var walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+    var seen = 0, node, last = null;
+    while ((node = walker.nextNode())) {
+      if (index <= seen + node.data.length) {
+        var r = document.createRange();
+        r.setStart(node, index - seen);
+        r.collapse(true);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        return;
+      }
+      seen += node.data.length;
+      last = node;
+    }
+    if (last) {
+      var end = document.createRange();
+      end.setStart(last, last.data.length);
+      end.collapse(true);
+      var s2 = window.getSelection();
+      s2.removeAllRanges();
+      s2.addRange(end);
+    }
+  }
+
+  // Run a DOM rewrite without moving the caret. A live selection is left alone
+  // (decorating must never collapse it); with no caret at all - e.g. the
+  // settings popover holds the focus - the rewrite still runs, there is just
+  // nothing to restore.
+  function withCaret(mutate) {
+    var sel = window.getSelection();
+    if (sel.rangeCount && !sel.getRangeAt(0).collapsed) return false;
+    var offset = caretOffset();
+    if (!mutate()) return false;
+    if (offset >= 0) applyCaretOffset(offset);
+    return true;
+  }
+
+  // Line numbers and the ⏎ marker are ::before/::after on the line boxes, so
+  // every line has to actually be a <div>. Typing leaves the first line as a
+  // bare text node; wrap it. Generated content never reaches innerText, so the
+  // saved file is unaffected.
+  function ensureLineDivs() {
+    if (!editor.firstChild || editor.firstChild.nodeName === "DIV") return false;
+    var line = document.createElement("div");
+    while (editor.firstChild && editor.firstChild.nodeName !== "DIV") {
+      line.appendChild(editor.firstChild);
+    }
+    editor.insertBefore(line, editor.firstChild);
+    return true;
+  }
+
+  var WS_CLASS = { " ": "tate-sp", "\t": "tate-tab", "　": "tate-wsp" };
+  var MARKER_SELECTOR = "span.tate-sp, span.tate-tab, span.tate-wsp";
+
+  function lineNeedsMarkers(line) {
+    var wanted = 0, text = line.textContent;
+    for (var i = 0; i < text.length; i++) if (WS_CLASS[text[i]]) wanted++;
+    if (wanted !== line.querySelectorAll(MARKER_SELECTOR).length) return true;
+    for (var n = line.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) {
+        for (var j = 0; j < n.data.length; j++) if (WS_CLASS[n.data[j]]) return true;
+      }
+    }
+    return false;
+  }
+
+  // Markers carry background/outline only - never anything that changes metrics,
+  // so wrapping cannot reflow the text.
+  function addMarkers(line) {
+    var text = line.textContent;
+    if (!text) return false;               // empty line: just a <br>, leave it
+    var frag = document.createDocumentFragment();
+    var buf = "";
+    function flush() {
+      if (buf) { frag.appendChild(document.createTextNode(buf)); buf = ""; }
+    }
+    for (var i = 0; i < text.length; i++) {
+      var cls = WS_CLASS[text[i]];
+      if (cls) {
+        flush();
+        var span = document.createElement("span");
+        span.className = cls;
+        span.textContent = text[i];
+        frag.appendChild(span);
+      } else {
+        buf += text[i];
+      }
+    }
+    flush();
+    line.textContent = "";
+    line.appendChild(frag);
+    return true;
+  }
+
+  function stripMarkers(line) {
+    if (!line.querySelector || !line.querySelector(MARKER_SELECTOR)) return false;
+    line.textContent = line.textContent;
+    return true;
+  }
+
+  function refreshDecorations() {
+    if (!options.lineNumbers && !options.showWhitespace) {
+      if (editor.querySelector(MARKER_SELECTOR)) {
+        withCaret(function () {
+          var changed = false;
+          for (var i = 0; i < editor.children.length; i++) {
+            changed = stripMarkers(editor.children[i]) || changed;
+          }
+          return changed;
+        });
+      }
+      return;
+    }
+    withCaret(function () {
+      var changed = ensureLineDivs();
+      for (var i = 0; i < editor.children.length; i++) {
+        var line = editor.children[i];
+        if (line.nodeName !== "DIV") continue;
+        if (options.showWhitespace) {
+          if (lineNeedsMarkers(line)) changed = addMarkers(line) || changed;
+        } else {
+          changed = stripMarkers(line) || changed;
+        }
+      }
+      return changed;
+    });
+  }
+
+  window.setOptions = function (opts) {
+    options.lineNumbers = !!opts.lineNumbers;
+    options.showWhitespace = !!opts.showWhitespace;
+    editor.classList.toggle("tate-linenum", options.lineNumbers);
+    editor.classList.toggle("tate-ws", options.showWhitespace);
+    refreshDecorations();
+  };
+
   // The IME must never see the DOM change mid-composition.
   var composing = false;
   editor.addEventListener("compositionstart", function () { composing = true; });
@@ -35,6 +190,9 @@
       // editor, which is also the state the Enter handler below expects.
       editor.innerHTML = "";
       caretToStart();
+    } else if (!composing) {
+      refreshDecorations();
+      text = currentText();
     }
     post({ type: "changed", text: text, count: text.length });
   }
@@ -59,6 +217,15 @@
     if (!sel.modify) return;
     e.preventDefault();
     sel.modify(e.shiftKey ? "extend" : "move", move[0], move[1]);
+  });
+
+  // Tab would otherwise move the focus out of the editor instead of indenting.
+  // A literal tab is safe here - unlike "\n" it does not disturb the caret.
+  editor.addEventListener("keydown", function (e) {
+    if (e.key === "Tab" && !e.isComposing && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      document.execCommand("insertText", false, "\t");
+    }
   });
 
   // Do NOT override Enter in general. Forcing a plain line break (or any literal
@@ -130,6 +297,7 @@
     editor.scrollLeft = 0;  // back to the first column, on the right
     editor.focus();
     caretToStart();  // focus() alone lands the caret between blocks
+    refreshDecorations();
   };
 
   window.setFontSize = function (px) {

@@ -32,6 +32,7 @@ html, body {
 #editor {
   writing-mode: vertical-rl;
   text-orientation: mixed;
+  position: relative;   /* containing block for the placeholder */
   height: 100%;
   width: 100%;
   box-sizing: border-box;
@@ -52,7 +53,78 @@ html, body {
   caret-color: #b3401f;
 }
 
+/* The placeholder must stay out of the layout flow. As an in-flow ::before it
+   generates a line box inside the empty editable, which pushes the caret into
+   the next column (and above the padding) once the document has been emptied
+   by editing. Absolute positioning keeps the caret at the true start.
+   top/right mirror the #editor padding, in em so zooming keeps them aligned. */
 #editor:empty::before {
   content: attr(data-placeholder);
   color: #a8a296;
+  position: absolute;
+  top: 2.5em;
+  right: 1.5em;
+  pointer-events: none;
+}
+
+/* --- 行番号 ------------------------------------------------------------- */
+/* One counter per line box. The digits are set upright so the number reads
+   normally in a vertical column; text-combine-upright (縦中横) parses in this
+   WebKit but computes to none, so it is not relied on. */
+#editor.tate-linenum {
+  counter-reset: tate-line;
+}
+
+#editor.tate-linenum > div {
+  counter-increment: tate-line;
+}
+
+#editor.tate-linenum > div::before {
+  content: counter(tate-line) "\3000";
+  color: #b5ac99;
+  font-size: 0.6em;
+  text-orientation: upright;
+}
+
+/* --- 空白・タブ・改行の可視化 -------------------------------------------- */
+/* Markers use background/outline only, so they never change text metrics. */
+#editor.tate-ws > div:not(:last-child)::after {
+  content: "\21B5";          /* ⏎ */
+  color: #cbc0a9;
+}
+
+/* A blank line is <div><br></div>. The <br> ends the line box, so an in-flow
+   ::after marker is pushed into a *second* column: the blank line then eats two
+   columns and every following line number sits one column off. Taking the
+   marker out of flow keeps the line exactly one column wide and puts the mark
+   at the top of that column, where the blank line's newline belongs.
+   (Hiding the <br> would also fix the layout, but display:none drops the blank
+   line from innerText, and so from the saved file.) */
+#editor.tate-ws > div:has(> br:only-child) {
+  position: relative;
+}
+
+#editor.tate-ws > div:has(> br:only-child)::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* clear the line number, which occupies the head of the column */
+#editor.tate-ws.tate-linenum > div:has(> br:only-child)::after {
+  top: 1.5em;
+}
+
+#editor.tate-ws .tate-sp {
+  background: radial-gradient(circle at 50% 50%, #c0b6a0 0 1.7px, transparent 1.8px);
+}
+
+#editor.tate-ws .tate-wsp {   /* 全角スペース */
+  outline: 1px dashed #cbc0a9;
+  outline-offset: -2px;
+}
+
+#editor.tate-ws .tate-tab {
+  background: linear-gradient(to bottom,
+              transparent 0 45%, #cbc0a9 45% 55%, transparent 55% 100%);
 }

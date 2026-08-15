@@ -19,6 +19,40 @@ INSTALLED_ASSETS = "/usr/share/tate-note/assets"
 DEV_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 ASSETS_DIR = DEV_ASSETS if os.path.isdir(DEV_ASSETS) else INSTALLED_ASSETS
 
+DEFAULT_SETTINGS = {
+    "line_numbers": False,
+    "count_newlines": True,
+    "show_whitespace": False,
+}
+
+
+def settings_path():
+    return os.path.join(GLib.get_user_config_dir(), "tate-note", "settings.json")
+
+
+def load_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        with open(settings_path(), "r", encoding="utf-8") as f:
+            stored = json.load(f)
+    except (OSError, ValueError):
+        return settings
+    if isinstance(stored, dict):
+        for key in DEFAULT_SETTINGS:
+            if isinstance(stored.get(key), bool):
+                settings[key] = stored[key]
+    return settings
+
+
+def save_settings(settings):
+    path = settings_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass  # a read-only config dir must not break editing
+
 
 class TateNoteWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
@@ -28,6 +62,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.current_path = None
         self.text = ""
         self.modified = False
+        self.settings = load_settings()
 
         self._build_header_bar()
 
@@ -38,6 +73,8 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         manager.register_script_message_handler("app")
         manager.connect("script-message-received::app", self._on_js_message)
 
+        # Settings can only reach the page once it has loaded.
+        self.webview.connect("load-changed", self._on_load_changed)
         self.webview.load_uri("file://" + os.path.join(ASSETS_DIR, "editor.html"))
 
         self.add(self.webview)
@@ -87,6 +124,8 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         zoom_in.connect("clicked", lambda _b: self.action_zoom(2))
         header.pack_end(zoom_in)
 
+        self._build_settings_menu(header)
+
         self.count_label = Gtk.Label(label="0字")
         self.count_label.set_margin_start(6)
         self.count_label.set_margin_end(6)
@@ -102,6 +141,57 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self._add_accel(accel, "o", lambda: self.action_open())
         self._add_accel(accel, "s", lambda: self.action_save())
         self._add_accel(accel, "s", lambda: self.action_save_as(), shift=True)
+
+    def _build_settings_menu(self, header):
+        button = Gtk.MenuButton()
+        button.set_image(
+            Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
+        )
+        button.set_tooltip_text("設定")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        for margin in ("top", "bottom", "start", "end"):
+            getattr(box, "set_margin_" + margin)(14)
+
+        self.setting_checks = {}
+        for key, label in (
+            ("line_numbers", "行番号を表示"),
+            ("count_newlines", "改行を文字数に含める"),
+            ("show_whitespace", "空白・タブ・改行を表示"),
+        ):
+            check = Gtk.CheckButton(label=label)
+            check.set_active(self.settings[key])
+            check.connect("toggled", self._on_setting_toggled, key)
+            box.pack_start(check, False, False, 0)
+            self.setting_checks[key] = check
+
+        popover = Gtk.Popover()
+        popover.add(box)
+        box.show_all()
+        button.set_popover(popover)
+        header.pack_end(button)
+
+    def _on_setting_toggled(self, check, key):
+        if self.settings[key] == check.get_active():
+            return
+        self.settings[key] = check.get_active()
+        save_settings(self.settings)
+        self._apply_settings()
+
+    def _apply_settings(self):
+        self._run_js("window.setOptions({})".format(json.dumps({
+            "lineNumbers": self.settings["line_numbers"],
+            "showWhitespace": self.settings["show_whitespace"],
+        })))
+        self._update_count()
+
+    def _update_count(self):
+        text = self.text if self.settings["count_newlines"] else self.text.replace("\n", "")
+        self.count_label.set_text("{}字".format(len(text)))
+
+    def _on_load_changed(self, _webview, event):
+        if event == WebKit2.LoadEvent.FINISHED:
+            self._apply_settings()
 
     def _add_accel(self, accel, key, callback, shift=False):
         mods = Gdk.ModifierType.CONTROL_MASK
@@ -131,7 +221,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         # The editor mirrors its whole buffer on every edit, so saving never has
         # to wait for a round trip to JavaScript.
         self.text = payload.get("text", "")
-        self.count_label.set_text("{}字".format(payload.get("count", 0)))
+        self._update_count()
         if not self.modified:
             self.modified = True
             self._update_title()
@@ -193,7 +283,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
     def _set_content(self, text):
         self.text = text
         self.modified = False
-        self.count_label.set_text("{}字".format(len(text)))
+        self._update_count()
         self._run_js("window.setContent({})".format(json.dumps(text)))
 
     def action_open(self):
