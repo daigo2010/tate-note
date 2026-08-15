@@ -26,7 +26,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.set_default_size(760, 640)
 
         self.current_path = None
-        self.pending_save_path = None
+        self.text = ""
         self.modified = False
 
         self._build_header_bar()
@@ -42,6 +42,8 @@ class TateNoteWindow(Gtk.ApplicationWindow):
 
         self.add(self.webview)
         self.connect("delete-event", self._on_delete_event)
+        self.show_all()
+        self.webview.grab_focus()
 
     def _make_settings(self):
         settings = WebKit2.Settings()
@@ -91,6 +93,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         header.pack_end(self.count_label)
 
         self.header = header
+        header.show_all()
         self._update_title()
 
         accel = Gtk.AccelGroup()
@@ -108,7 +111,12 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         accel.connect(keyval, mods, Gtk.AccelFlags.VISIBLE, lambda *_a: callback())
 
     def _run_js(self, script):
-        self.webview.evaluate_javascript(script, -1, None, None, None, None, None)
+        # evaluate_javascript() exists from WebKitGTK 2.40; older 4.0 builds only
+        # provide the deprecated run_javascript().
+        if hasattr(self.webview, "evaluate_javascript"):
+            self.webview.evaluate_javascript(script, -1, None, None, None, None, None)
+        else:
+            self.webview.run_javascript(script, None, None, None)
 
     def _update_title(self):
         name = os.path.basename(self.current_path) if self.current_path else "無題"
@@ -118,30 +126,30 @@ class TateNoteWindow(Gtk.ApplicationWindow):
 
     def _on_js_message(self, _manager, result):
         payload = json.loads(result.get_js_value().to_string())
-        kind = payload.get("type")
-        if kind == "count":
-            self.count_label.set_text("{}字".format(payload.get("count", 0)))
-        elif kind == "modified":
-            if not self.modified:
-                self.modified = True
-                self._update_title()
-        elif kind == "content":
-            self._write_content(payload.get("text", ""))
-
-    def _write_content(self, text):
-        path = self.pending_save_path
-        self.pending_save_path = None
-        if not path:
+        if payload.get("type") != "changed":
             return
+        # The editor mirrors its whole buffer on every edit, so saving never has
+        # to wait for a round trip to JavaScript.
+        self.text = payload.get("text", "")
+        self.count_label.set_text("{}字".format(payload.get("count", 0)))
+        if not self.modified:
+            self.modified = True
+            self._update_title()
+
+    def _write_content(self, path):
+        text = self.text
+        if text:
+            text += "\n"
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
         except OSError as e:
             self._error_dialog("保存に失敗しました: {}".format(e))
-            return
+            return False
         self.current_path = path
         self.modified = False
         self._update_title()
+        return True
 
     def _error_dialog(self, message):
         dialog = Gtk.MessageDialog(
@@ -172,17 +180,21 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         response = dialog.run()
         dialog.destroy()
         if response == Gtk.ResponseType.YES:
-            self.action_save()
-            return True
+            return self.action_save()
         return response == Gtk.ResponseType.NO
 
     def action_new(self):
         if not self._confirm_discard():
             return
-        self._run_js("window.setContent('')")
+        self._set_content("")
         self.current_path = None
-        self.modified = False
         self._update_title()
+
+    def _set_content(self, text):
+        self.text = text
+        self.modified = False
+        self.count_label.set_text("{}字".format(len(text)))
+        self._run_js("window.setContent({})".format(json.dumps(text)))
 
     def action_open(self):
         if not self._confirm_discard():
@@ -217,17 +229,14 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         except (OSError, UnicodeDecodeError) as e:
             self._error_dialog("開けませんでした: {}".format(e))
             return
-        self._run_js("window.setContent({})".format(json.dumps(text)))
+        self._set_content(text.rstrip("\n"))
         self.current_path = path
-        self.modified = False
         self._update_title()
 
     def action_save(self):
         if not self.current_path:
-            self.action_save_as()
-            return
-        self.pending_save_path = self.current_path
-        self._run_js("window.requestSave()")
+            return self.action_save_as()
+        return self._write_content(self.current_path)
 
     def action_save_as(self):
         dialog = Gtk.FileChooserDialog(
@@ -246,13 +255,14 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         if self.current_path:
             dialog.set_current_folder(os.path.dirname(self.current_path))
 
+        saved = False
         if dialog.run() == Gtk.ResponseType.OK:
             path = dialog.get_filename()
             if not path.lower().endswith(".txt"):
                 path += ".txt"
-            self.pending_save_path = path
-            self._run_js("window.requestSave()")
+            saved = self._write_content(path)
         dialog.destroy()
+        return saved
 
     def action_zoom(self, delta):
         self._run_js(
