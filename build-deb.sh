@@ -1,8 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-1.0.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Version: an explicit argument wins, otherwise a release-x.y.z git tag, and
+# 1.0.0 if there is neither. A tag on HEAD is preferred over an older one so
+# that building a checked-out release always packages that release's number.
+git_release_version() {
+  command -v git >/dev/null 2>&1 || return 1
+  git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 1
+
+  local pattern='release-[0-9]*.[0-9]*.[0-9]*' tag
+  tag="$(git -C "$ROOT_DIR" tag --points-at HEAD --list "$pattern" \
+         | sort -V | tail -n 1)"
+  if [ -z "$tag" ]; then
+    tag="$(git -C "$ROOT_DIR" describe --tags --abbrev=0 --match "$pattern" 2>/dev/null || true)"
+  fi
+  [ -n "$tag" ] || return 1
+
+  local version="${tag#release-}"
+  case "$version" in
+    [0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$version" ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ $# -ge 1 ]; then
+  VERSION="$1"
+else
+  VERSION="$(git_release_version || true)"
+  VERSION="${VERSION:-1.0.0}"
+fi
 DIST_DIR="$ROOT_DIR/dist"
 PKG_ROOT="$DIST_DIR/pkgroot"
 
@@ -26,5 +54,6 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__SIZE__/$SIZE_KB/" \
 DEB_FILE="$DIST_DIR/tate-note_${VERSION}_all.deb"
 dpkg-deb --build --root-owner-group "$PKG_ROOT" "$DEB_FILE"
 
+echo "Version: $VERSION"
 echo "Built: $DEB_FILE"
 echo "Install with: sudo apt install $DEB_FILE"
