@@ -1,3 +1,16 @@
+/* WebKit leaves the long-bar characters ー ＝ 〜 ― lying flat in vertical text
+   instead of standing them on end. Forcing "vert" on #editor as a whole would
+   fix them but re-rotates 「」（ etc., which WebKit already handles correctly —
+   so the feature is scoped to exactly those four code points via unicode-range.
+   If none of these fonts is installed the rule simply does not apply. */
+@font-face {
+  font-family: "TateBou";
+  src: local("Noto Serif CJK JP"), local("IPAmincho"),
+       local("Hiragino Mincho ProN"), local("Noto Sans CJK JP");
+  unicode-range: U+30FC, U+FF1D, U+301C, U+2015;
+  font-feature-settings: "vert" 1;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -20,7 +33,7 @@ html, body {
   overflow-y: hidden;
   white-space: pre-wrap;
   word-break: break-all;
-  font-family: "Noto Serif CJK JP", "IPAmincho", "Hiragino Mincho ProN", serif;
+  font-family: "TateBou", "Noto Serif CJK JP", "IPAmincho", "Hiragino Mincho ProN", serif;
   font-size: 22px;
   line-height: 2;
   letter-spacing: 0.08em;

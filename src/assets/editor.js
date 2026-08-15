@@ -12,12 +12,54 @@
     return editor.innerText.replace(/\n$/, "");
   }
 
+  function caretToStart() {
+    var range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(true);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // The IME must never see the DOM change mid-composition.
+  var composing = false;
+  editor.addEventListener("compositionstart", function () { composing = true; });
+  editor.addEventListener("compositionend", function () { composing = false; report(); });
+
   function report() {
     var text = currentText();
+    if (text === "" && !composing && editor.childNodes.length) {
+      // Deleting the last character leaves a stray <br> behind. The editor is
+      // then no longer :empty (so the placeholder stays hidden) and WebKit
+      // paints the caret above the padding box. Reset to a genuinely empty
+      // editor, which is also the state the Enter handler below expects.
+      editor.innerHTML = "";
+      caretToStart();
+    }
     post({ type: "changed", text: text, count: text.length });
   }
 
   editor.addEventListener("input", report);
+
+  // Arrow keys must follow the *visual* directions, not the logical ones. In
+  // vertical-rl WebKit's defaults are rotated: Down/Up jump between columns and
+  // Left/Right walk along one. Measured mapping back to what the eye expects:
+  //   forward/character  = visually down      backward/character = visually up
+  //   forward/line       = visually left      backward/line      = visually right
+  var ARROWS = {
+    ArrowDown:  ["forward", "character"],
+    ArrowUp:    ["backward", "character"],
+    ArrowLeft:  ["forward", "line"],
+    ArrowRight: ["backward", "line"]
+  };
+  editor.addEventListener("keydown", function (e) {
+    var move = ARROWS[e.key];
+    if (!move || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return;
+    var sel = window.getSelection();
+    if (!sel.modify) return;
+    e.preventDefault();
+    sel.modify(e.shiftKey ? "extend" : "move", move[0], move[1]);
+  });
 
   // Do NOT override Enter in general. Forcing a plain line break (or any literal
   // "\n" in this white-space:pre-wrap box) makes WebKit paint the caret one
@@ -30,18 +72,14 @@
     if (e.key === "Enter" && !e.isComposing && editor.childNodes.length === 0) {
       e.preventDefault();
       editor.focus();
-      var range = document.createRange();
-      range.selectNodeContents(editor);
-      range.collapse(true);
-      var sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
+      caretToStart();
       document.execCommand("insertParagraph");
       // Leave the caret on the new second line.
       if (editor.childNodes.length > 1) {
         var last = document.createRange();
         last.selectNodeContents(editor.childNodes[1]);
         last.collapse(true);
+        var sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(last);
       }
@@ -91,13 +129,7 @@
     }
     editor.scrollLeft = 0;  // back to the first column, on the right
     editor.focus();
-    // Put the caret at the very start; focus() alone lands it between blocks.
-    var start = document.createRange();
-    start.selectNodeContents(editor);
-    start.collapse(true);
-    var sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(start);
+    caretToStart();  // focus() alone lands the caret between blocks
   };
 
   window.setFontSize = function (px) {
