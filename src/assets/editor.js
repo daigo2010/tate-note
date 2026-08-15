@@ -42,6 +42,14 @@
     var walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
     var seen = 0, node, last = null;
     while ((node = walker.nextNode())) {
+      // Landing exactly on the end of a marker span would put the caret inside
+      // it, so the next character typed would be swallowed by the marker again.
+      // Prefer the following text node in that case.
+      if (index === seen + node.data.length && isMarker(node.parentNode)) {
+        seen += node.data.length;
+        last = node;
+        continue;
+      }
       if (index <= seen + node.data.length) {
         var r = document.createRange();
         r.setStart(node, index - seen);
@@ -94,14 +102,27 @@
   var WS_CLASS = { " ": "tate-sp", "\t": "tate-tab", "　": "tate-wsp" };
   var MARKER_SELECTOR = "span.tate-sp, span.tate-tab, span.tate-wsp";
 
+  function isMarker(node) {
+    return node && node.nodeType === 1 && node.matches && node.matches(MARKER_SELECTOR);
+  }
+
   function lineNeedsMarkers(line) {
     var wanted = 0, text = line.textContent;
     for (var i = 0; i < text.length; i++) if (WS_CLASS[text[i]]) wanted++;
-    if (wanted !== line.querySelectorAll(MARKER_SELECTOR).length) return true;
-    for (var n = line.firstChild; n; n = n.nextSibling) {
-      if (n.nodeType === 3) {
-        for (var j = 0; j < n.data.length; j++) if (WS_CLASS[n.data[j]]) return true;
-      }
+    var spans = line.querySelectorAll(MARKER_SELECTOR);
+    if (wanted !== spans.length) return true;
+    // Each marker must still hold exactly its own whitespace character. Typing
+    // directly after one makes WebKit grow the span rather than the line's text
+    // node, which would drag the marker's outline across the new characters.
+    for (var k = 0; k < spans.length; k++) {
+      var data = spans[k].textContent;
+      if (data.length !== 1 || WS_CLASS[data] !== spans[k].className) return true;
+    }
+    // ...and no whitespace may be left sitting in an undecorated text node.
+    var walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT, null), n;
+    while ((n = walker.nextNode())) {
+      if (isMarker(n.parentNode)) continue;
+      for (var j = 0; j < n.data.length; j++) if (WS_CLASS[n.data[j]]) return true;
     }
     return false;
   }
