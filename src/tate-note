@@ -74,6 +74,11 @@ def save_settings(settings):
 class TateNoteWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="縦書きノート")
+        # The icon is installed under the application ID, and a Wayland shell
+        # finds it by matching the window's app_id against the .desktop file of
+        # that name. Naming it here as well covers X11, where the icon travels
+        # with the window rather than with the launcher.
+        self.set_icon_name(APP_ID)
         # Vertical text runs off to the left, so the more width there is the
         # more of the document is on screen; start filling the display. The
         # default size is what un-maximising falls back to.

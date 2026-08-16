@@ -45,8 +45,15 @@ mkdir -p \
 install -m 755 "$ROOT_DIR/src/tate-note" "$PKG_ROOT/usr/bin/tate-note"
 # The editor is split across modules; the launcher looks for them here.
 install -m 644 "$ROOT_DIR/src/"tate*.py "$PKG_ROOT/usr/share/tate-note/"
-install -m 644 "$ROOT_DIR/src/tate-note.svg" "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps/tate-note.svg"
-install -m 644 "$ROOT_DIR/packaging/tate-note.desktop" "$PKG_ROOT/usr/share/applications/tate-note.desktop"
+# The desktop entry and the icon are installed under the application ID, not
+# the command name. That is how a Wayland compositor ties a window back to its
+# launcher: the window's app_id is the GApplication ID, and the shell looks for
+# the .desktop file of that name to find out which icon to show.
+APP_ID="net.tate_note.TateNote"
+install -m 644 "$ROOT_DIR/src/tate-note.svg" \
+  "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+install -m 644 "$ROOT_DIR/packaging/$APP_ID.desktop" \
+  "$PKG_ROOT/usr/share/applications/$APP_ID.desktop"
 
 SIZE_KB="$(du -sk "$PKG_ROOT/usr" | cut -f1)"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__SIZE__/$SIZE_KB/" \
