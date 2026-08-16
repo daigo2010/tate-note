@@ -1,0 +1,57 @@
+name: tate-note
+title: 縦書きノート
+base: core24
+license: MIT
+icon: src/tate-note.svg
+
+# Summary, description and version are taken from the AppStream metainfo that
+# the part installs, so the store listing and the desktop metadata cannot drift
+# apart. The version is then overridden with the release tag, which is what
+# build-deb.sh uses too.
+adopt-info: tate-note
+
+grade: stable
+confinement: strict
+compression: lzo
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  tate-note:
+    command: usr/bin/tate-note
+    extensions: [gnome]
+    common-id: net.tate_note.TateNote
+    desktop: usr/share/applications/net.tate_note.TateNote.desktop
+    plugs:
+      # Manuscripts live in the home directory; removable-media covers drafts
+      # kept on a USB stick or an external disk. Anywhere else is reached
+      # through the file chooser portal, which needs no interface of its own.
+      - home
+      - removable-media
+
+parts:
+  tate-note:
+    plugin: nil
+    source: .
+    parse-info: [usr/share/metainfo/net.tate_note.TateNote.metainfo.xml]
+    stage-packages:
+      - python3-gi
+      # The editor asks Pango for "Noto Serif CJK JP" by name. Staging the
+      # font means the text renders on a machine with no Japanese fonts
+      # installed, at the cost of most of the snap's size.
+      - fonts-noto-cjk
+    override-build: |
+      craftctl default
+      install -Dm755 src/tate-note "${CRAFT_PART_INSTALL}/usr/bin/tate-note"
+      install -Dm644 -t "${CRAFT_PART_INSTALL}/usr/share/tate-note" src/tate*.py
+      install -Dm644 src/tate-note.svg \
+        "${CRAFT_PART_INSTALL}/usr/share/icons/hicolor/scalable/apps/net.tate_note.TateNote.svg"
+      install -Dm644 packaging/net.tate_note.TateNote.desktop \
+        "${CRAFT_PART_INSTALL}/usr/share/applications/net.tate_note.TateNote.desktop"
+      install -Dm644 packaging/net.tate_note.TateNote.metainfo.xml \
+        "${CRAFT_PART_INSTALL}/usr/share/metainfo/net.tate_note.TateNote.metainfo.xml"
+      version="$(git -C "${CRAFT_PROJECT_DIR}" describe --tags --abbrev=0 \
+        --match 'release-[0-9]*.[0-9]*.[0-9]*' 2>/dev/null | sed 's/^release-//')"
+      craftctl set version="${version:-0.0.1}"

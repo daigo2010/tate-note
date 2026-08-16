@@ -20,9 +20,10 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 # Run from a checkout or from an installed copy: the modules sit beside this
-# script in the source tree, and under /usr/share once packaged.
+# script in the source tree, and under /usr/share once packaged. Inside a snap
+# every path is relative to $SNAP, so the installed location moves with it.
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_INSTALLED = "/usr/share/tate-note"
+_INSTALLED = os.environ.get("SNAP", "") + "/usr/share/tate-note"
 sys.path.insert(0, _HERE if os.path.exists(os.path.join(_HERE, "tateview.py"))
                 else _INSTALLED)
 

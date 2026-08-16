@@ -116,7 +116,7 @@ Ubuntu 24.04 以降（GTK4）。日本語フォント（Noto CJK など）が必
 ビルドされた `.deb` のパスは最後に表示されます。
 
 ```sh
-sudo apt install ./dist/tate-note_0.0.1_all.deb
+sudo apt install ./dist/tate-note_*_all.deb
 ```
 
 `build-deb.sh` はバージョンを引数から取り、なければ `release-x.y.z` という
@@ -131,6 +131,38 @@ git タグから決めます（どちらもなければ `1.0.0`）。apt が依�
 ```sh
 sudo apt remove tate-note
 ```
+
+## Snap パッケージ（Ubuntu App Center 用）
+
+`snap/snapcraft.yaml` があります。ビルドには snapcraft と LXD が必要です。
+
+```sh
+sudo snap install snapcraft --classic && sudo snap install lxd && sudo lxd init --auto
+```
+
+```sh
+snapcraft
+```
+
+出来上がった `.snap` をローカルで確認するには:
+
+```sh
+sudo snap install --dangerous ./tate-note_*.snap
+```
+
+公開手順（Ubuntu One アカウントが必要です）:
+
+```sh
+snapcraft login && snapcraft register tate-note
+```
+
+```sh
+snapcraft upload --release=stable tate-note_*.snap
+```
+
+バージョンは `.deb` と同じく `release-x.y.z` タグから決まります。ストアの
+説明文・アイコン・カテゴリは `packaging/net.tate_note.TateNote.metainfo.xml`
+から取り込まれるので、変更するときはそちらを編集してください。
 
 ## 開発 / 動作確認（インストールせずに実行）
 
@@ -159,6 +191,12 @@ src/tatedoc.py       1 タブ分の文書。本文ビュー＋メモ欄＋検索
 src/tatetree.py      フォルダツリー
 src/tatesearch.py    検索・置換バー
 src/tate-note.svg    アイコン
-packaging/           .desktop ファイルと dpkg control テンプレート
+packaging/           .desktop / AppStream metainfo / dpkg control テンプレート
+snap/snapcraft.yaml  Snap パッケージの定義
 build-deb.sh         .deb ビルドスクリプト
+LICENSE              MIT ライセンス
 ```
+
+## ライセンス
+
+MIT License. 詳細は [LICENSE](LICENSE) を参照してください。

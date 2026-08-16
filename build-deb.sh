@@ -54,6 +54,11 @@ install -m 644 "$ROOT_DIR/src/tate-note.svg" \
   "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 install -m 644 "$ROOT_DIR/packaging/$APP_ID.desktop" \
   "$PKG_ROOT/usr/share/applications/$APP_ID.desktop"
+# AppStream metadata, so the app has a proper entry in a software centre.
+install -Dm 644 "$ROOT_DIR/packaging/$APP_ID.metainfo.xml" \
+  "$PKG_ROOT/usr/share/metainfo/$APP_ID.metainfo.xml"
+install -Dm 644 "$ROOT_DIR/LICENSE" \
+  "$PKG_ROOT/usr/share/doc/tate-note/copyright"
 
 SIZE_KB="$(du -sk "$PKG_ROOT/usr" | cut -f1)"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__SIZE__/$SIZE_KB/" \
