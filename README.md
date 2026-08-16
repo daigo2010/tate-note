@@ -137,11 +137,22 @@ sudo apt remove tate-note
 `snap/snapcraft.yaml` があります。ビルドには snapcraft と LXD が必要です。
 
 ```sh
-sudo snap install snapcraft --classic && sudo snap install lxd && sudo lxd init --auto
+sudo snap install snapcraft --classic && sudo snap install lxd
+```
+
+LXD はグループに所属していないと使えません。追加したあと、ログインし直すか
+`newgrp lxd` を実行してください。
+
+```sh
+sudo usermod -aG lxd "$USER"
 ```
 
 ```sh
-snapcraft
+sudo lxd init --auto
+```
+
+```sh
+snapcraft pack
 ```
 
 出来上がった `.snap` をローカルで確認するには:
