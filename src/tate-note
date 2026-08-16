@@ -74,7 +74,11 @@ def save_settings(settings):
 class TateNoteWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="縦書きノート")
+        # Vertical text runs off to the left, so the more width there is the
+        # more of the document is on screen; start filling the display. The
+        # default size is what un-maximising falls back to.
         self.set_default_size(760, 640)
+        self.maximize()
 
         self.settings = load_settings()
         self.font_size = 22.0
