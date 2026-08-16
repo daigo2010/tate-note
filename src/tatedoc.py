@@ -18,6 +18,26 @@ from tateview import VerticalTextView
 
 MEMO_WIDTH = 240
 
+# Files are UTF-8 throughout. The line ending is the one thing that varies, so
+# each document remembers the one it arrived with and writes it back out.
+NEWLINES = (("\n", "LF"), ("\r\n", "CRLF"), ("\r", "CR"))
+NEWLINE_NAMES = dict(NEWLINES)
+
+
+def _to_lf(raw):
+    """Everything is LF inside the editor; only the file on disk differs."""
+    return raw.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def detect_newline(raw):
+    """The ending a file mostly uses. LF when it has none, and on a tie."""
+    crlf = raw.count("\r\n")
+    counts = ((raw.count("\n") - crlf, "\n"),
+              (crlf, "\r\n"),
+              (raw.count("\r") - crlf, "\r"))
+    most, ending = max(counts)
+    return ending if most > 0 else "\n"
+
 # The editor draws its own paper; left to the system theme the memo beside it
 # would come out dark and the pair would look like two different applications.
 MEMO_CSS = b"""
@@ -73,6 +93,7 @@ class Document(Gtk.Paned):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
         self.path = None
         self.modified = False
+        self.newline = "\n"
 
         self.view = VerticalTextView("")
         self.view.connect("changed", self._on_changed)
@@ -183,6 +204,25 @@ class Document(Gtk.Paned):
         self.scrollbar.set_sensitive(scrollable)
         self.scrollbar.set_opacity(1.0 if scrollable else 0.0)
 
+    # ---- line endings ----------------------------------------------------
+
+    @property
+    def newline_name(self):
+        return NEWLINE_NAMES.get(self.newline, "LF")
+
+    def set_newline(self, ending):
+        """Choose what this document writes at the end of each line."""
+        if ending not in NEWLINE_NAMES or ending == self.newline:
+            return
+        self.newline = ending
+        # The file on disk still has the old endings, so this is a change to
+        # be saved like any other.
+        self.modified = True
+        self.emit("state-changed")
+
+    def _with_newlines(self, text):
+        return text if self.newline == "\n" else text.replace("\n", self.newline)
+
     # ---- files -----------------------------------------------------------
 
     @property
@@ -192,9 +232,12 @@ class Document(Gtk.Paned):
                 and not self.view.text and not self.memo_text)
 
     def load(self, path):
-        with open(path, "r", encoding="utf-8") as f:
-            text = f.read()
-        self.view.set_text(text.rstrip("\n"))
+        # newline="" hands the endings over untranslated, so the file's own can
+        # be recognised instead of being quietly folded into LF on the way in.
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            raw = f.read()
+        self.newline = detect_newline(raw)
+        self.view.set_text(_to_lf(raw).rstrip("\n"))
         self.view.set_caret_index(0)
 
         # A memo saved alongside the document comes back with it.
@@ -202,8 +245,8 @@ class Document(Gtk.Paned):
         companion = memo_path_for(path)
         if companion and os.path.exists(companion):
             try:
-                with open(companion, "r", encoding="utf-8") as f:
-                    memo = f.read()
+                with open(companion, "r", encoding="utf-8", newline="") as f:
+                    memo = _to_lf(f.read())
             except (OSError, UnicodeDecodeError):
                 memo = ""
         self.set_memo_text(memo)
@@ -217,8 +260,8 @@ class Document(Gtk.Paned):
         text = self.view.text
         if text:
             text += "\n"
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(text)
+        with open(target, "w", encoding="utf-8", newline="") as f:
+            f.write(self._with_newlines(text))
         self._save_memo(target)
         self.path = target
         self.modified = False
@@ -237,8 +280,8 @@ class Document(Gtk.Paned):
         if memo.strip():
             if not memo.endswith("\n"):
                 memo += "\n"
-            with open(companion, "w", encoding="utf-8") as f:
-                f.write(memo)
+            with open(companion, "w", encoding="utf-8", newline="") as f:
+                f.write(self._with_newlines(memo))
         elif os.path.exists(companion):
             try:
                 os.remove(companion)

@@ -26,7 +26,7 @@ _INSTALLED = "/usr/share/tate-note"
 sys.path.insert(0, _HERE if os.path.exists(os.path.join(_HERE, "tateview.py"))
                 else _INSTALLED)
 
-from tatedoc import Document
+from tatedoc import NEWLINES, Document
 from tatetree import FolderTree
 
 APP_ID = "net.tate_note.TateNote"
@@ -240,6 +240,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         header.pack_end(zoom_in)
 
         header.pack_end(self._settings_button())
+        header.pack_end(self._newline_button())
 
         self.count_label = Gtk.Label(label="0字")
         header.pack_end(self.count_label)
@@ -247,6 +248,47 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.subtitle = Gtk.Label(label="無題")
         self.subtitle.add_css_class("dim-label")
         header.set_title_widget(self.subtitle)
+
+    def _newline_button(self):
+        """Shows the current tab's line ending, and changes it.
+
+        This belongs to the document rather than to the application: a file
+        arrives with its own endings and should keep them, so the button
+        follows whichever tab is in front.
+        """
+        self.newline_button = Gtk.MenuButton(label="LF")
+        self.newline_button.set_tooltip_text("改行コード")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for edge in ("top", "bottom", "start", "end"):
+            getattr(box, "set_margin_" + edge)(12)
+
+        self.newline_checks = {}
+        group = None
+        for ending, name in NEWLINES:
+            check = Gtk.CheckButton(label="{} ({})".format(
+                name, {"LF": "Unix", "CRLF": "Windows", "CR": "古い Mac"}[name]))
+            if group is None:
+                group = check
+            else:
+                check.set_group(group)
+            check.connect("toggled", self._on_newline_toggled, ending)
+            box.append(check)
+            self.newline_checks[ending] = check
+        self.newline_checks["\n"].set_active(True)
+
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        self.newline_button.set_popover(popover)
+        return self.newline_button
+
+    def _on_newline_toggled(self, check, ending):
+        # Radio buttons fire for the one being cleared as well; and refreshing
+        # the header sets them itself, which must not write back.
+        if not check.get_active() or getattr(self, "_syncing_newline", False):
+            return
+        doc = self.current()
+        if doc is not None:
+            doc.set_newline(ending)
 
     def _settings_button(self):
         button = Gtk.MenuButton(icon_name="open-menu-symbolic")
@@ -295,6 +337,10 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.subtitle.set_text(doc.label)
         self.count_label.set_text(
             "{}字".format(doc.char_count(self.settings["count_newlines"])))
+        self.newline_button.set_label(doc.newline_name)
+        self._syncing_newline = True
+        self.newline_checks[doc.newline].set_active(True)
+        self._syncing_newline = False
 
     def zoom(self, delta):
         self.font_size = max(8.0, min(96.0, self.font_size + delta))
