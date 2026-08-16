@@ -141,6 +141,8 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self._add_accel(accel, "o", lambda: self.action_open())
         self._add_accel(accel, "s", lambda: self.action_save())
         self._add_accel(accel, "s", lambda: self.action_save_as(), shift=True)
+        # 診断用 (issue #1): レイアウト情報を ~/tate-note-layout.txt に書き出す
+        self._add_accel(accel, "d", lambda: self._run_js("window.dumpLayout()"), shift=True)
 
     def _build_settings_menu(self, header):
         button = Gtk.MenuButton()
@@ -228,6 +230,9 @@ class TateNoteWindow(Gtk.ApplicationWindow):
 
     def _on_js_message(self, _manager, result):
         payload = json.loads(result.get_js_value().to_string())
+        if payload.get("type") == "debug":
+            self._write_debug_report(payload.get("report", ""))
+            return
         if payload.get("type") != "changed":
             return
         # The editor mirrors its whole buffer on every edit, so saving never has
@@ -237,6 +242,23 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         if not self.modified:
             self.modified = True
             self._update_title()
+
+    def _write_debug_report(self, report):
+        path = os.path.join(GLib.get_home_dir(), "tate-note-layout.txt")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(report)
+        except OSError as e:
+            self._error_dialog("診断情報を書き出せませんでした: {}".format(e))
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self, modal=True,
+            message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.OK,
+            text="レイアウト診断を書き出しました",
+        )
+        dialog.format_secondary_text(path)
+        dialog.run()
+        dialog.destroy()
 
     def _write_content(self, path):
         text = self.text

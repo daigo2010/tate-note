@@ -105,7 +105,18 @@
   }
 
   var WS_CLASS = { " ": "tate-sp", "\t": "tate-tab", "　": "tate-wsp" };
-  var MARKER_SELECTOR = "span.tate-sp, span.tate-tab, span.tate-wsp";
+  var MARKER_SELECTOR = "span.tate-sp, span.tate-tab, span.tate-wsp, span.tate-bar";
+
+  // U+2015 ― is wrapped whatever the display options are. It cannot be rotated
+  // through the font's "vert" feature like the other long bars: that form makes
+  // a run of dashes share a single character cell, so ―― and ――― come out no
+  // longer than a single ―. text-orientation:sideways on a wrapper turns it
+  // through the text layout instead, which leaves the advance untouched.
+  function markerClassFor(ch) {
+    if (ch === "―") return "tate-bar";
+    if (options.showWhitespace && WS_CLASS[ch]) return WS_CLASS[ch];
+    return null;
+  }
 
   function isMarker(node) {
     return node && node.nodeType === 1 && node.matches && node.matches(MARKER_SELECTOR);
@@ -113,7 +124,7 @@
 
   function lineNeedsMarkers(line) {
     var wanted = 0, text = line.textContent;
-    for (var i = 0; i < text.length; i++) if (WS_CLASS[text[i]]) wanted++;
+    for (var i = 0; i < text.length; i++) if (markerClassFor(text[i])) wanted++;
     var spans = line.querySelectorAll(MARKER_SELECTOR);
     if (wanted !== spans.length) return true;
     // Each marker must still hold exactly its own whitespace character. Typing
@@ -121,13 +132,13 @@
     // node, which would drag the marker's outline across the new characters.
     for (var k = 0; k < spans.length; k++) {
       var data = spans[k].textContent;
-      if (data.length !== 1 || WS_CLASS[data] !== spans[k].className) return true;
+      if (data.length !== 1 || markerClassFor(data) !== spans[k].className) return true;
     }
-    // ...and no whitespace may be left sitting in an undecorated text node.
+    // ...and nothing that needs a marker may be left in a bare text node.
     var walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT, null), n;
     while ((n = walker.nextNode())) {
       if (isMarker(n.parentNode)) continue;
-      for (var j = 0; j < n.data.length; j++) if (WS_CLASS[n.data[j]]) return true;
+      for (var j = 0; j < n.data.length; j++) if (markerClassFor(n.data[j])) return true;
     }
     return false;
   }
@@ -155,7 +166,7 @@
       if (buf) { frag.appendChild(document.createTextNode(buf)); buf = ""; }
     }
     for (var i = 0; i < text.length; i++) {
-      var cls = WS_CLASS[text[i]];
+      var cls = markerClassFor(text[i]);
       if (cls) {
         flush();
         var span = document.createElement("span");
@@ -178,33 +189,77 @@
     return true;
   }
 
+  // The line-number gutter is a margin sized for the widest number on screen.
+  // Signalled with classes rather than a custom property so the stylesheet stays
+  // the single source of the measurements.
+  function updateLineNumberWidth() {
+    var digits = options.lineNumbers
+      ? String(Math.max(1, editor.children.length)).length : 1;
+    editor.classList.toggle("tate-ln-2", digits === 2);
+    editor.classList.toggle("tate-ln-3", digits >= 3);
+  }
+
+  // Runs unconditionally: ― always needs its wrapper, even with every display
+  // option off. markerClassFor() decides per character what, if anything, gets
+  // wrapped, so turning an option off drops those spans on the next pass.
   function refreshDecorations() {
-    if (!options.lineNumbers && !options.showWhitespace) {
-      if (editor.querySelector(MARKER_SELECTOR)) {
-        withCaret(function () {
-          var changed = false;
-          for (var i = 0; i < editor.children.length; i++) {
-            changed = stripMarkers(editor.children[i]) || changed;
-          }
-          return changed;
-        });
-      }
-      return;
-    }
     withCaret(function () {
       var changed = ensureLineDivs();
       for (var i = 0; i < editor.children.length; i++) {
         var line = editor.children[i];
         if (line.nodeName !== "DIV") continue;
-        if (options.showWhitespace) {
-          if (lineNeedsMarkers(line)) changed = addMarkers(line) || changed;
-        } else {
-          changed = stripMarkers(line) || changed;
-        }
+        if (lineNeedsMarkers(line)) changed = addMarkers(line) || changed;
       }
       return changed;
     });
+    updateLineNumberWidth();
   }
+
+  // Diagnostic for issue #1: reports what each line box and its number actually
+  // measure, so a layout problem that only shows on another machine can be seen
+  // rather than guessed at. Bound to Ctrl+Shift+D.
+  window.dumpLayout = function () {
+    var report = {
+      editorClass: editor.className,
+      fontSize: window.getComputedStyle(editor).fontSize,
+      viewport: editor.clientWidth + "x" + editor.clientHeight,
+      innerHTML: editor.innerHTML.slice(0, 2000),
+      lines: []
+    };
+    for (var i = 0; i < editor.childNodes.length; i++) {
+      var node = editor.childNodes[i];
+      if (node.nodeType !== 1) {
+        report.lines.push({ index: i, node: "#text", text: node.data });
+        continue;
+      }
+      var box = node.getBoundingClientRect();
+      var style = window.getComputedStyle(node);
+      var before = window.getComputedStyle(node, "::before");
+      var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
+      var first = walker.nextNode(), charBox = null;
+      if (first) {
+        var r = document.createRange();
+        r.setStart(first, 0); r.setEnd(first, 1);
+        var cb = r.getBoundingClientRect();
+        charBox = Math.round(cb.x) + "," + Math.round(cb.y);
+      }
+      report.lines.push({
+        index: i,
+        node: node.nodeName,
+        text: node.textContent,
+        box: Math.round(box.x) + ".." + Math.round(box.x + box.width) +
+             " y=" + Math.round(box.y),
+        margin: style.marginTop, padding: style.paddingTop, position: style.position,
+        firstChar: charBox,
+        before: { content: before.content, position: before.position,
+                  top: before.top, right: before.right,
+                  width: before.width, height: before.height,
+                  fontSize: before.fontSize }
+      });
+    }
+    post({ type: "debug", report: JSON.stringify(report, null, 2) });
+    return "ok";
+  };
 
   window.setOptions = function (opts) {
     options.lineNumbers = !!opts.lineNumbers;

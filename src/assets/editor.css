@@ -8,8 +8,11 @@
   font-family: "TateBou";
   src: local("Noto Serif CJK JP"), local("IPAmincho"),
        local("Hiragino Mincho ProN"), local("Noto Sans CJK JP");
+  /* U+2015 ― is deliberately absent: text-orientation:mixed already stands it
+     upright, and running it through "vert" makes a run of them share a single
+     character cell (―― and ――― come out squashed) instead of one cell each. */
   unicode-range:
-    U+2015, U+301C, U+30FC, U+FF1D,   /* ― 〜 ー ＝  横棒系 */
+    U+301C, U+30FC, U+FF1D,           /* 〜 ー ＝  横棒系 */
     U+2018-U+2019, U+201C-U+201D,     /* ‘ ’ “ ”              */
     U+3008-U+3011,                    /* 〈〉《》「」『』【】 */
     U+3014-U+301B,                    /* 〔〕〖〗〘〙〚〛     */
@@ -75,6 +78,12 @@ html, body {
   counter-reset: tate-line;
 }
 
+/* The number is kept IN the line's flow. Taking it out (absolute positioning,
+   with the gutter as padding or as a margin) does put the caret below the
+   number here, but broke the numbering on the reporter's machine twice and
+   could not be reproduced locally - so the known-good layout stands until
+   there is a diagnosis. Consequence: the caret is still drawn over the number
+   on an empty line. See issue #1. */
 #editor.tate-linenum > div {
   counter-increment: tate-line;
 }
@@ -113,6 +122,15 @@ html, body {
 /* clear the line number, which occupies the head of the column */
 #editor.tate-ws.tate-linenum > div:has(> br:only-child)::after {
   top: 1.5em;
+}
+
+/* U+2015 ―: the font's vertical form is right for a single dash but a *run* of
+   them is shaped to share one character cell, so ―― and ――― came out no longer
+   than a single ―. Boxing each dash on its own breaks the run apart - the glyph
+   still gets its vertical form, but every dash now advances one full cell.
+   The wrapper is applied whatever the display options are. */
+#editor .tate-bar {
+  display: inline-block;
 }
 
 #editor.tate-ws .tate-sp {
