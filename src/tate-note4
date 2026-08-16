@@ -20,6 +20,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tatedoc import Document
+from tatetree import FolderTree
 
 APP_ID = "net.tate_note.TateNote4"
 
@@ -27,6 +28,8 @@ DEFAULT_SETTINGS = {
     "line_numbers": False,
     "count_newlines": True,
     "show_whitespace": False,
+    "show_memo": True,
+    "show_folder": False,
 }
 
 
@@ -45,6 +48,9 @@ def load_settings():
         for key in DEFAULT_SETTINGS:
             if isinstance(stored.get(key), bool):
                 settings[key] = stored[key]
+        # Not a toggle, so it is carried across separately.
+        if isinstance(stored.get("last_folder"), str):
+            settings["last_folder"] = stored["last_folder"]
     return settings
 
 
@@ -70,9 +76,28 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.notebook.set_scrollable(True)
         self.notebook.connect("switch-page", self._on_switch_page)
 
+        # The tree sits outside the notebook: it belongs to the window, not to
+        # any one document, and lives to the right of the per-tab memo pane.
+        self.tree = FolderTree()
+        self.tree.connect("file-activated", lambda _t, path: self.open_path(path))
+        self.tree.connect("folder-requested", lambda _t: self.action_open_folder())
+
+        self.split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.split.set_start_child(self.notebook)
+        self.split.set_resize_start_child(True)
+        self.split.set_shrink_start_child(False)
+        self.split.set_end_child(self.tree)
+        self.split.set_resize_end_child(False)
+        self.split.set_shrink_end_child(False)
+
         self._build_header()
-        self.set_child(self.notebook)
+        self.set_child(self.split)
         self._install_shortcuts()
+
+        self.tree.set_visible(self.settings["show_folder"])
+        last = self.settings.get("last_folder")
+        if last and os.path.isdir(last):
+            self.tree.set_root(last)
 
         self.new_tab()
         self.connect("map", lambda *_a: self._focus_current())
@@ -172,6 +197,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         for icon, tip, handler in (
             ("tab-new-symbolic", "新しいタブ (Ctrl+T)", self.action_new),
             ("document-open-symbolic", "開く (Ctrl+O)", self.action_open),
+            ("folder-open-symbolic", "フォルダを開く", self.action_open_folder),
             ("document-save-symbolic", "保存 (Ctrl+S)", self.action_save),
             ("document-save-as-symbolic", "名前を付けて保存", self.action_save_as),
         ):
@@ -210,6 +236,8 @@ class TateNoteWindow(Gtk.ApplicationWindow):
             ("line_numbers", "行番号を表示"),
             ("count_newlines", "改行を文字数に含める"),
             ("show_whitespace", "空白・タブ・改行を表示"),
+            ("show_memo", "メモを表示"),
+            ("show_folder", "フォルダを表示"),
         ):
             check = Gtk.CheckButton(label=label)
             check.set_active(self.settings[key])
@@ -228,12 +256,14 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         save_settings(self.settings)
         for doc in self.documents():
             self._apply_settings_to(doc)
+        self.tree.set_visible(self.settings["show_folder"])
         self._update_header()
 
     def _apply_settings_to(self, doc):
         doc.view.set_show_line_numbers(self.settings["line_numbers"])
         doc.view.set_show_whitespace(self.settings["show_whitespace"])
         doc.view.set_font_size(self.font_size)
+        doc.set_show_memo(self.settings["show_memo"])
 
     def _update_header(self):
         doc = self.current()
@@ -318,6 +348,32 @@ class TateNoteWindow(Gtk.ApplicationWindow):
                 self._focus_current()
                 return doc
         return self.new_tab(path)
+
+    def action_open_folder(self):
+        dialog = Gtk.FileChooserNative.new(
+            "フォルダを開く", self, Gtk.FileChooserAction.SELECT_FOLDER,
+            "開く", "キャンセル")
+        dialog.connect("response", self._on_folder_response)
+        dialog.show()
+        self._folder_dialog = dialog
+
+    def _on_folder_response(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile is not None:
+                self.show_folder(gfile.get_path())
+        dialog.destroy()
+        self._folder_dialog = None
+
+    def show_folder(self, path):
+        """Open a folder in the tree, revealing the pane if it was hidden."""
+        self.tree.set_root(path)
+        self.settings["show_folder"] = True
+        self.settings["last_folder"] = path
+        save_settings(self.settings)
+        self.tree.set_visible(True)
+        if "show_folder" in self.setting_checks:
+            self.setting_checks["show_folder"].set_active(True)
 
     def action_save(self):
         doc = self.current()
