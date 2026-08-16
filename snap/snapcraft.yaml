@@ -18,6 +18,18 @@ platforms:
   amd64:
   arm64:
 
+# GApplication takes the application ID as a well-known name on the session
+# bus, and that is how a second launch hands its file to the running window.
+# Confinement only lets a snap own names derived from the snap name, which
+# "net.tate_note.TateNote" is not, so the name has to be declared. Declaring
+# the slot is enough on its own - it needs no connection, and applies to every
+# app in the snap.
+slots:
+  dbus-tate-note:
+    interface: dbus
+    bus: session
+    name: net.tate_note.TateNote
+
 apps:
   tate-note:
     command: usr/bin/tate-note
