@@ -18,6 +18,7 @@ gi.require_version("Pango", "1.0")
 from gi.repository import GLib, GObject, Gdk, Gtk, Graphene, Pango
 
 from tatelayout import VerticalLayout, DEFAULT_FONT
+from tateundo import Edit, UndoStack
 
 
 def rgba(hexcode):
@@ -65,6 +66,7 @@ class VerticalTextView(Gtk.Widget):
         self._matches = []              # (start, end) character indices
         self._current_match = -1
         self._scroll = 0.0
+        self._undo = UndoStack()
 
         self._im = Gtk.IMMulticontext()
         self._im.set_client_widget(self)
@@ -167,8 +169,11 @@ class VerticalTextView(Gtk.Widget):
         return self._text
 
     def set_text(self, text):
+        """Load a document. This is not an edit, so it starts history over."""
         self._text = text
         self._caret = min(self._caret, len(text))
+        self._anchor = None
+        self._undo.reset()
         self._sync()
         self.emit("changed")
 
@@ -177,6 +182,9 @@ class VerticalTextView(Gtk.Widget):
         return self._caret
 
     def set_caret_index(self, index, extend=False):
+        # Deliberately moving the caret ends whatever was being typed, so the
+        # next keystroke starts its own undo step.
+        self._undo.barrier()
         if extend:
             if self._anchor is None:
                 self._anchor = self._caret
@@ -294,13 +302,13 @@ class VerticalTextView(Gtk.Widget):
         span = self.selection
         if not span:
             return False
-        start, end = span
-        self._text = self._text[:start] + self._text[end:]
-        self._caret = start
-        self._anchor = None
-        self._sync()
-        self.emit("changed")
-        return True
+        # Removing a selection is a decision in itself: sealed off on both sides
+        # so neither the backspacing before it nor the backspacing after it gets
+        # folded into the same step.
+        self._undo.barrier()
+        removed = self.replace_span(span[0], span[1], "")
+        self._undo.barrier()
+        return removed
 
     def _display_text(self):
         return self._text[:self._caret] + self._preedit + self._text[self._caret:]
@@ -349,34 +357,107 @@ class VerticalTextView(Gtk.Widget):
 
     # ---- editing ---------------------------------------------------------
 
+    def _apply(self, start, end, chunk, caret, anchor):
+        """Swap one span of text and put the caret down. Records nothing."""
+        self._text = self._text[:start] + chunk + self._text[end:]
+        self._caret = max(0, min(caret, len(self._text)))
+        self._anchor = None if anchor is None else max(0, min(anchor, len(self._text)))
+        self._sync()
+        self.emit("changed")
+
+    def replace_span(self, start, end, chunk):
+        """The single way the document ever changes, so nothing escapes undo."""
+        removed = self._text[start:end]
+        if not removed and not chunk:
+            return False
+        after = (start + len(chunk), None)
+        self._undo.record(
+            Edit(start, removed, chunk, (self._caret, self._anchor), after))
+        self._apply(start, end, chunk, *after)
+        return True
+
     def insert(self, chunk):
         if not chunk:
             return
-        self.delete_selection()          # typing replaces the selection
-        self._text = self._text[:self._caret] + chunk + self._text[self._caret:]
-        self._caret += len(chunk)
-        self._anchor = None
-        self._sync()
-        self.emit("changed")
+        span = self.selection            # typing replaces the selection
+        if span:
+            self._undo.barrier()
+            self.replace_span(span[0], span[1], chunk)
+        else:
+            self.replace_span(self._caret, self._caret, chunk)
 
     def delete_before(self):
         if self.delete_selection():
             return
         if self._caret <= 0:
             return
-        self._text = self._text[:self._caret - 1] + self._text[self._caret:]
-        self._caret -= 1
-        self._sync()
-        self.emit("changed")
+        self.replace_span(self._caret - 1, self._caret, "")
 
     def delete_after(self):
         if self.delete_selection():
             return
         if self._caret >= len(self._text):
             return
-        self._text = self._text[:self._caret] + self._text[self._caret + 1:]
-        self._sync()
-        self.emit("changed")
+        self.replace_span(self._caret, self._caret + 1, "")
+
+    # ---- undo ------------------------------------------------------------
+
+    @property
+    def can_undo(self):
+        return self._undo.can_undo
+
+    @property
+    def can_redo(self):
+        return self._undo.can_redo
+
+    def undo(self):
+        edit = self._undo.undo()
+        if edit is None:
+            return False
+        self._apply(edit.start, edit.end, edit.removed, *edit.before)
+        return True
+
+    def redo(self):
+        edit = self._undo.redo()
+        if edit is None:
+            return False
+        self._apply(edit.start, edit.start + len(edit.removed), edit.inserted,
+                    *edit.after)
+        return True
+
+    # ---- replacing -------------------------------------------------------
+
+    def replace_current(self, replacement):
+        """Swap the match the selection is sitting on. True if one was."""
+        if not 0 <= self._current_match < len(self._matches):
+            return False
+        span = self._matches[self._current_match]
+        if self.selection != span:
+            return False                 # the caret has moved off the match
+        self._undo.barrier()
+        self.replace_span(span[0], span[1], replacement)
+        self._undo.barrier()
+        return True
+
+    def replace_all(self, query, replacement, case_sensitive=False):
+        """Swap every occurrence as one undo step; returns how many there were.
+
+        The whole run from the first match to the last is rewritten in a single
+        replacement so that undo puts the document back in one press.
+        """
+        spans = self._scan(query, case_sensitive) if query else []
+        if not spans:
+            return 0
+        start, end = spans[0][0], spans[-1][1]
+        pieces, at = [], start
+        for match_start, match_end in spans:
+            pieces.append(self._text[at:match_start])
+            pieces.append(replacement)
+            at = match_end
+        self._undo.barrier()
+        self.replace_span(start, end, "".join(pieces))
+        self._undo.barrier()
+        return len(spans)
 
     # ---- clipboard -------------------------------------------------------
 
@@ -436,6 +517,11 @@ class VerticalTextView(Gtk.Widget):
                 self.cut_selection(); return True
             if letter == "v":
                 self.paste_clipboard(); return True
+            if letter == "z":
+                self.redo() if shift else self.undo()
+                return True
+            if letter == "y":
+                self.redo(); return True
             if keyval in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
                 self.set_caret_index(0)
                 return True
@@ -460,8 +546,8 @@ class VerticalTextView(Gtk.Widget):
             self.insert("\n"); return True
         if keyval == Gdk.KEY_Tab:
             self.insert("\t"); return True
-        # Shift jumps to the ends of the document; plain Home/End stay on the
-        # current line.
+        # Ctrl jumps to the ends of the document, above; plain Home/End stay on
+        # the current line.
         if keyval in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
             self.set_caret_index(self._line_bounds()[0])
             return True

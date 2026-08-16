@@ -33,10 +33,26 @@ Ubuntu 用の縦書きテキストエディタです。GTK4 + Pango でテキス
 数値として扱う自然順（`1, 2, 10`）で並び、ドットで始まるファイル（メモの
 実体）は表示されません。ファイルをダブルクリックするとタブで開きます。
 
-### 検索
+### 検索と置換
 
 `Ctrl+F` で検索バーが開きます。一致箇所はすべて色付けされ、現在の一致は濃く
 表示されます。`Aa` ボタンで大文字小文字の区別を切り替えられます。
+
+`Ctrl+H`（または検索バーの置換ボタン）で置換欄が開きます。「置換」は今表示
+されている一致だけを置き換えて次へ進み、「すべて置換」は一度に全部を置き換え
+ます。すべて置換は `Ctrl+Z` 一回で元に戻せます。
+
+### 元に戻す
+
+`Ctrl+Z` で元に戻し、`Ctrl+Shift+Z`（または `Ctrl+Y`）でやり直します。続けて
+打った文字はひとまとまりで戻ります。改行、カーソルの移動、選択範囲の削除は
+区切りになるので、一回分が大きくなりすぎることはありません。
+
+### 未保存の変更
+
+変更したまま閉じようとすると、保存するかどうかを尋ねます。「保存」「保存
+しない」「キャンセル」から選べます。ウィンドウを閉じるときは、未保存のタブ
+すべてについて順番に尋ねます。
 
 ## キー操作
 
@@ -48,13 +64,16 @@ Ubuntu 用の縦書きテキストエディタです。GTK4 + Pango でテキス
 | `Ctrl+W` | タブを閉じる |
 | `Ctrl+PageDown` / `Ctrl+PageUp` | 次 / 前のタブ |
 | `Ctrl+F` | 検索 |
+| `Ctrl+H` | 置換 |
 | `Ctrl+G` / `Ctrl+Shift+G` | 次 / 前の一致へ |
+| `Ctrl+Z` | 元に戻す |
+| `Ctrl+Shift+Z` / `Ctrl+Y` | やり直す |
 | `Ctrl+A` | すべて選択 |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | コピー / 切り取り / 貼り付け |
 | `↑` `↓` | 行の中を移動 |
 | `←` `→` | 行を移動 |
 | `Home` / `End` | 行頭 / 行末 |
-| `Shift+Home` / `Shift+End` | ファイルの先頭 / 末尾 |
+| `Ctrl+Home` / `Ctrl+End` | ファイルの先頭 / 末尾 |
 | `PageUp` / `PageDown` | 一画面分スクロール |
 | `Shift` + 移動キー | 選択範囲を広げる |
 
@@ -84,8 +103,10 @@ Ubuntu 24.04 以降（GTK4）。日本語フォント（Noto CJK など）が必
 ./build-deb.sh
 ```
 
+ビルドされた `.deb` のパスは最後に表示されます。
+
 ```sh
-sudo apt install ./dist/tate-note_1.0.0_all.deb
+sudo apt install ./dist/tate-note_0.0.1_all.deb
 ```
 
 `build-deb.sh` はバージョンを引数から取り、なければ `release-x.y.z` という
@@ -123,9 +144,10 @@ sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-pango-1.0 fonts-noto-cjk
 src/tate-note        アプリケーション本体（ウィンドウ、タブ、設定、ファイル操作）
 src/tateview.py      縦書きビュー。入力・カーソル・選択・描画・検索の表示
 src/tatelayout.py    Pango による縦書きレイアウト。座標と文字位置の相互変換
+src/tateundo.py      編集履歴。元に戻す / やり直す
 src/tatedoc.py       1 タブ分の文書。本文ビュー＋メモ欄＋検索バー
 src/tatetree.py      フォルダツリー
-src/tatesearch.py    検索バー
+src/tatesearch.py    検索・置換バー
 src/tate-note.svg    アイコン
 packaging/           .desktop ファイルと dpkg control テンプレート
 build-deb.sh         .deb ビルドスクリプト

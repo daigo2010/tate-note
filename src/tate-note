@@ -163,8 +163,15 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         self.notebook.set_show_tabs(self.notebook.get_n_pages() > 1)
 
     def close_tab(self, doc):
-        if doc.modified and not self._confirm_discard(doc):
+        # The answer arrives from a dialog, so the tab goes away in a callback
+        # rather than on the way out of this method.
+        if not doc.modified:
+            self._drop_tab(doc)
             return
+        self.notebook.set_current_page(self.notebook.page_num(doc))
+        self._confirm_discard(doc, lambda: self._drop_tab(doc))
+
+    def _drop_tab(self, doc):
         index = self.notebook.page_num(doc)
         if index < 0:
             return
@@ -296,6 +303,7 @@ class TateNoteWindow(Gtk.ApplicationWindow):
                                ("<Control><Shift>s", self.action_save_as),
                                ("<Control>w", self.action_close_tab),
                                ("<Control>f", self.action_find),
+                               ("<Control>h", self.action_replace),
                                ("<Control>g", self.action_find_next),
                                ("<Control><Shift>g", self.action_find_previous),
                                ("<Control>Page_Down", self.action_next_tab),
@@ -309,6 +317,11 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         doc = self.current()
         if doc is not None:
             doc.search.open()
+
+    def action_replace(self):
+        doc = self.current()
+        if doc is not None:
+            doc.search.open(replace=True)
 
     def action_find_next(self):
         doc = self.current()
@@ -409,27 +422,32 @@ class TateNoteWindow(Gtk.ApplicationWindow):
             return
         self._write(doc, doc.path)
 
-    def action_save_as(self):
-        doc = self.current()
+    def action_save_as(self, doc=None, done=None):
+        doc = doc or self.current()
         if doc is None:
             return
         dialog = Gtk.FileChooserNative.new(
             "名前を付けて保存", self, Gtk.FileChooserAction.SAVE, "保存", "キャンセル")
         dialog.set_current_name(doc.title if doc.path else "無題.txt")
-        dialog.connect("response", self._on_save_response, doc)
+        dialog.connect("response", self._on_save_response, doc, done)
         dialog.show()
         self._save_dialog = dialog
 
-    def _on_save_response(self, dialog, response, doc):
+    def _on_save_response(self, dialog, response, doc, done=None):
+        saved = False
         if response == Gtk.ResponseType.ACCEPT:
             gfile = dialog.get_file()
             if gfile is not None:
                 path = gfile.get_path()
                 if not path.lower().endswith(".txt"):
                     path += ".txt"
-                self._write(doc, path)
+                saved = self._write(doc, path)
         dialog.destroy()
         self._save_dialog = None
+        # Only carry on with whatever was waiting on the save if it worked;
+        # a cancelled dialog has to leave the document where it was.
+        if saved and done is not None:
+            done()
 
     def _write(self, doc, path):
         try:
@@ -439,11 +457,66 @@ class TateNoteWindow(Gtk.ApplicationWindow):
             return False
         return True
 
+    def _save_then(self, doc, done):
+        """Save the document however it needs saving, then carry on."""
+        if doc.path:
+            if self._write(doc, doc.path):
+                done()
+            return
+        self.action_save_as(doc, done)
+
     # ---- dialogs ---------------------------------------------------------
 
-    def _confirm_discard(self, doc):
-        # Placeholder until the discard dialog lands; never lose work silently.
-        return not doc.modified
+    def _confirm_discard(self, doc, proceed):
+        """Ask before a modified document is thrown away.
+
+        `proceed` runs once the document is safe to lose - either because it has
+        just been saved, or because the answer was to discard it. Cancelling, or
+        dismissing the dialog, simply does not call it.
+        """
+        dialog = Gtk.AlertDialog()
+        dialog.set_modal(True)
+        dialog.set_message("「{}」の変更を保存しますか？".format(doc.title))
+        dialog.set_detail("保存しないと、変更内容は失われます。")
+        dialog.set_buttons(["キャンセル", "保存しない", "保存"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(2)
+
+        def answered(source, result):
+            try:
+                choice = source.choose_finish(result)
+            except GLib.Error:
+                return                  # dismissed: keep the document
+            if choice == 1:
+                proceed()
+            elif choice == 2:
+                self._save_then(doc, proceed)
+
+        dialog.choose(self, None, answered)
+
+    # ---- quitting --------------------------------------------------------
+
+    def do_close_request(self):
+        if getattr(self, "_leaving", False):
+            return False
+        pending = [doc for doc in self.documents() if doc.modified]
+        if not pending:
+            return False
+        # Hold the window open and work through the unsaved tabs one at a time.
+        self._ask_before_quitting(pending)
+        return True
+
+    def _ask_before_quitting(self, pending):
+        if not pending:
+            self._leaving = True
+            self.destroy()
+            return
+        doc, rest = pending[0], pending[1:]
+        if self.notebook.page_num(doc) < 0:
+            self._ask_before_quitting(rest)
+            return
+        self.notebook.set_current_page(self.notebook.page_num(doc))
+        self._confirm_discard(doc, lambda: self._ask_before_quitting(rest))
 
     def _error(self, message):
         dialog = Gtk.AlertDialog()
