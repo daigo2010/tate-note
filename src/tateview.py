@@ -436,6 +436,12 @@ class VerticalTextView(Gtk.Widget):
                 self.cut_selection(); return True
             if letter == "v":
                 self.paste_clipboard(); return True
+            if keyval in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
+                self.set_caret_index(0)
+                return True
+            if keyval in (Gdk.KEY_End, Gdk.KEY_KP_End):
+                self.set_caret_index(len(self._text))
+                return True
             return False                # file shortcuts belong to the window
 
         # Visual directions: down/up walk the column, left/right change column.
@@ -457,10 +463,10 @@ class VerticalTextView(Gtk.Widget):
         # Shift jumps to the ends of the document; plain Home/End stay on the
         # current line.
         if keyval in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
-            self.set_caret_index(0 if shift else self._line_bounds()[0])
+            self.set_caret_index(self._line_bounds()[0])
             return True
         if keyval in (Gdk.KEY_End, Gdk.KEY_KP_End):
-            self.set_caret_index(len(self._text) if shift else self._line_bounds()[1])
+            self.set_caret_index(self._line_bounds()[1])
             return True
         # Paging scrolls the view; the caret stays where it was.
         if keyval in (Gdk.KEY_Page_Down, Gdk.KEY_KP_Page_Down):
