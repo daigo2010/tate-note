@@ -1,28 +1,42 @@
 #!/usr/bin/env python3
+"""縦書きノート - a vertical-writing (tategaki) text editor.
+
+Pango lays the text out; this application draws it. Owning the drawing is what
+keeps the caret, the line numbers and the whitespace marks from interfering with
+one another - each is placed from measurements rather than left to an embedded
+engine's discretion. Documents open in tabs, each with its own memo.
+"""
+
 import json
 import os
 import sys
 
 import gi
 
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-try:
-    gi.require_version("WebKit2", "4.1")
-except ValueError:
-    gi.require_version("WebKit2", "4.0")
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Pango", "1.0")
 
-from gi.repository import Gdk, Gio, GLib, Gtk, WebKit2
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+
+# Run from a checkout or from an installed copy: the modules sit beside this
+# script in the source tree, and under /usr/share once packaged.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_INSTALLED = "/usr/share/tate-note"
+sys.path.insert(0, _HERE if os.path.exists(os.path.join(_HERE, "tateview.py"))
+                else _INSTALLED)
+
+from tatedoc import Document
+from tatetree import FolderTree
 
 APP_ID = "net.tate_note.TateNote"
-INSTALLED_ASSETS = "/usr/share/tate-note/assets"
-DEV_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
-ASSETS_DIR = DEV_ASSETS if os.path.isdir(DEV_ASSETS) else INSTALLED_ASSETS
 
 DEFAULT_SETTINGS = {
     "line_numbers": False,
     "count_newlines": True,
     "show_whitespace": False,
+    "show_memo": True,
+    "show_folder": False,
 }
 
 
@@ -41,6 +55,9 @@ def load_settings():
         for key in DEFAULT_SETTINGS:
             if isinstance(stored.get(key), bool):
                 settings[key] = stored[key]
+        # Not a toggle, so it is carried across separately.
+        if isinstance(stored.get("last_folder"), str):
+            settings["last_folder"] = stored["last_folder"]
     return settings
 
 
@@ -51,7 +68,7 @@ def save_settings(settings):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except OSError:
-        pass  # a read-only config dir must not break editing
+        pass
 
 
 class TateNoteWindow(Gtk.ApplicationWindow):
@@ -59,366 +76,409 @@ class TateNoteWindow(Gtk.ApplicationWindow):
         super().__init__(application=app, title="縦書きノート")
         self.set_default_size(760, 640)
 
-        self.current_path = None
-        self.text = ""
-        self.modified = False
         self.settings = load_settings()
+        self.font_size = 22.0
 
-        self._build_header_bar()
+        self.notebook = Gtk.Notebook()
+        self.notebook.set_scrollable(True)
+        self.notebook.connect("switch-page", self._on_switch_page)
 
-        self.webview = WebKit2.WebView()
-        self.webview.set_settings(self._make_settings())
+        # The tree sits outside the notebook: it belongs to the window, not to
+        # any one document, and lives to the right of the per-tab memo pane.
+        self.tree = FolderTree()
+        self.tree.connect("file-activated", lambda _t, path: self.open_path(path))
+        self.tree.connect("folder-requested", lambda _t: self.action_open_folder())
 
-        manager = self.webview.get_user_content_manager()
-        manager.register_script_message_handler("app")
-        manager.connect("script-message-received::app", self._on_js_message)
+        self.split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self.split.set_start_child(self.notebook)
+        self.split.set_resize_start_child(True)
+        self.split.set_shrink_start_child(False)
+        self.split.set_end_child(self.tree)
+        self.split.set_resize_end_child(False)
+        self.split.set_shrink_end_child(False)
 
-        # Settings can only reach the page once it has loaded.
-        self.webview.connect("load-changed", self._on_load_changed)
-        self.webview.load_uri("file://" + os.path.join(ASSETS_DIR, "editor.html"))
+        self._build_header()
+        self.set_child(self.split)
+        self._install_shortcuts()
 
-        self.add(self.webview)
-        self.connect("delete-event", self._on_delete_event)
-        self.show_all()
-        self.webview.grab_focus()
+        self.tree.set_visible(self.settings["show_folder"])
+        last = self.settings.get("last_folder")
+        if last and os.path.isdir(last):
+            self.tree.set_root(last)
 
-    def _make_settings(self):
-        settings = WebKit2.Settings()
-        settings.set_enable_developer_extras(False)
-        settings.set_default_charset("utf-8")
-        return settings
+        self.new_tab()
+        self.connect("map", lambda *_a: self._focus_current())
 
-    def _build_header_bar(self):
+    # ---- tabs ------------------------------------------------------------
+
+    def current(self):
+        page = self.notebook.get_current_page()
+        return self.notebook.get_nth_page(page) if page >= 0 else None
+
+    def documents(self):
+        return [self.notebook.get_nth_page(i)
+                for i in range(self.notebook.get_n_pages())]
+
+    def new_tab(self, path=None):
+        """Open a document in a tab, reusing a blank one rather than piling up."""
+        doc = self.current()
+        if doc is None or not doc.is_untouched:
+            doc = Document()
+            doc.connect("state-changed", self._on_doc_state)
+            self._apply_settings_to(doc)
+            index = self.notebook.append_page(doc, self._tab_label(doc))
+            self.notebook.set_tab_reorderable(doc, True)
+            self.notebook.set_current_page(index)
+        if path:
+            try:
+                doc.load(path)
+            except (OSError, UnicodeDecodeError) as e:
+                self._error("開けませんでした: {}".format(e))
+        self._refresh_tab(doc)
+        self._update_header()
+        self._focus_current()
+        return doc
+
+    def _tab_label(self, doc):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(label=doc.label)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        # An ellipsizing label asks for almost no width, so without a floor it
+        # collapses to a bare "…"; the cap keeps long names from taking over.
+        label.set_width_chars(10)
+        label.set_max_width_chars(20)
+        close = Gtk.Button(icon_name="window-close-symbolic")
+        close.add_css_class("flat")
+        close.set_has_frame(False)
+        close.connect("clicked", lambda _b, d=doc: self.close_tab(d))
+        box.append(label)
+        box.append(close)
+        doc._tab_title = label                 # so the label can be refreshed
+        return box
+
+    def _refresh_tab(self, doc):
+        title = getattr(doc, "_tab_title", None)
+        if title is not None:
+            title.set_text(doc.label)
+        self.notebook.set_show_tabs(self.notebook.get_n_pages() > 1)
+
+    def close_tab(self, doc):
+        if doc.modified and not self._confirm_discard(doc):
+            return
+        index = self.notebook.page_num(doc)
+        if index < 0:
+            return
+        self.notebook.remove_page(index)
+        if self.notebook.get_n_pages() == 0:
+            self.new_tab()
+        else:
+            self._refresh_tab(self.current())
+            self._update_header()
+            self._focus_current()
+
+    def _on_switch_page(self, _notebook, _page, _num):
+        GLib.idle_add(self._after_switch)
+
+    def _after_switch(self):
+        self._update_header()
+        self._focus_current()
+        return False
+
+    def _focus_current(self):
+        doc = self.current()
+        if doc is not None:
+            self.set_focus(doc.view)
+            doc.view.grab_focus()
+
+    def _on_doc_state(self, doc):
+        self._refresh_tab(doc)
+        if doc is self.current():
+            self._update_header()
+
+    # ---- chrome ----------------------------------------------------------
+
+    def _build_header(self):
         header = Gtk.HeaderBar()
-        header.set_show_close_button(True)
-        header.set_title("縦書きノート")
         self.set_titlebar(header)
 
-        new_btn = Gtk.Button.new_from_icon_name("document-new-symbolic", Gtk.IconSize.BUTTON)
-        new_btn.set_tooltip_text("新規 (Ctrl+N)")
-        new_btn.connect("clicked", lambda _b: self.action_new())
-        header.pack_start(new_btn)
+        for icon, tip, handler in (
+            ("tab-new-symbolic", "新しいタブ (Ctrl+T)", self.action_new),
+            ("document-open-symbolic", "開く (Ctrl+O)", self.action_open),
+            ("folder-open-symbolic", "フォルダを開く", self.action_open_folder),
+            ("document-save-symbolic", "保存 (Ctrl+S)", self.action_save),
+            ("document-save-as-symbolic", "名前を付けて保存", self.action_save_as),
+        ):
+            button = Gtk.Button(icon_name=icon)
+            button.set_tooltip_text(tip)
+            button.connect("clicked", lambda _b, fn=handler: fn())
+            header.pack_start(button)
 
-        open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic", Gtk.IconSize.BUTTON)
-        open_btn.set_tooltip_text("開く (Ctrl+O)")
-        open_btn.connect("clicked", lambda _b: self.action_open())
-        header.pack_start(open_btn)
-
-        save_btn = Gtk.Button.new_from_icon_name("document-save-symbolic", Gtk.IconSize.BUTTON)
-        save_btn.set_tooltip_text("保存 (Ctrl+S)")
-        save_btn.connect("clicked", lambda _b: self.action_save())
-        header.pack_start(save_btn)
-
-        save_as_btn = Gtk.Button.new_from_icon_name("document-save-as-symbolic", Gtk.IconSize.BUTTON)
-        save_as_btn.set_tooltip_text("名前を付けて保存 (Ctrl+Shift+S)")
-        save_as_btn.connect("clicked", lambda _b: self.action_save_as())
-        header.pack_start(save_as_btn)
-
-        zoom_out = Gtk.Button.new_from_icon_name("zoom-out-symbolic", Gtk.IconSize.BUTTON)
+        zoom_out = Gtk.Button(icon_name="zoom-out-symbolic")
         zoom_out.set_tooltip_text("文字を小さく")
-        zoom_out.connect("clicked", lambda _b: self.action_zoom(-2))
+        zoom_out.connect("clicked", lambda _b: self.zoom(-2))
         header.pack_end(zoom_out)
 
-        zoom_in = Gtk.Button.new_from_icon_name("zoom-in-symbolic", Gtk.IconSize.BUTTON)
+        zoom_in = Gtk.Button(icon_name="zoom-in-symbolic")
         zoom_in.set_tooltip_text("文字を大きく")
-        zoom_in.connect("clicked", lambda _b: self.action_zoom(2))
+        zoom_in.connect("clicked", lambda _b: self.zoom(2))
         header.pack_end(zoom_in)
 
-        self._build_settings_menu(header)
+        header.pack_end(self._settings_button())
 
         self.count_label = Gtk.Label(label="0字")
-        self.count_label.set_margin_start(6)
-        self.count_label.set_margin_end(6)
         header.pack_end(self.count_label)
 
-        self.header = header
-        header.show_all()
-        self._update_title()
+        self.subtitle = Gtk.Label(label="無題")
+        self.subtitle.add_css_class("dim-label")
+        header.set_title_widget(self.subtitle)
 
-        accel = Gtk.AccelGroup()
-        self.add_accel_group(accel)
-        self._add_accel(accel, "n", lambda: self.action_new())
-        self._add_accel(accel, "o", lambda: self.action_open())
-        self._add_accel(accel, "s", lambda: self.action_save())
-        self._add_accel(accel, "s", lambda: self.action_save_as(), shift=True)
-        # 診断用 (issue #1): レイアウト情報を ~/tate-note-layout.txt に書き出す
-        self._add_accel(accel, "d", lambda: self._run_js("window.dumpLayout()"), shift=True)
-
-    def _build_settings_menu(self, header):
-        button = Gtk.MenuButton()
-        button.set_image(
-            Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
-        )
+    def _settings_button(self):
+        button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         button.set_tooltip_text("設定")
-
-        # A Gtk.Menu, not a Gtk.Popover with check buttons. The popover is drawn
-        # over the WebKitWebView, which owns a native subwindow and takes the
-        # first button press for itself: the click only moved the keyboard focus
-        # onto the check button and the toggle was swallowed, so the first click
-        # on any row appeared to do nothing. A menu runs in its own toplevel with
-        # its own pointer grab, so every click reaches the item.
-        menu = Gtk.Menu()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for edge in ("top", "bottom", "start", "end"):
+            getattr(box, "set_margin_" + edge)(12)
         self.setting_checks = {}
         for key, label in (
             ("line_numbers", "行番号を表示"),
             ("count_newlines", "改行を文字数に含める"),
             ("show_whitespace", "空白・タブ・改行を表示"),
+            ("show_memo", "メモを表示"),
+            ("show_folder", "フォルダを表示"),
         ):
-            item = Gtk.CheckMenuItem.new_with_label(label)
-            item.set_active(self.settings[key])
-            item.connect("toggled", self._on_setting_toggled, key)
-            # Toggling must not dismiss the menu - these are three independent
-            # options and one usually wants to set more than one. Handling the
-            # release ourselves keeps the menu shell from activating the item
-            # and deactivating the menu with it.
-            item.connect("button-release-event", self._on_setting_clicked)
-            menu.append(item)
-            self.setting_checks[key] = item
-
-        menu.show_all()
-        button.set_popup(menu)
-        self.settings_button = button
-        self.settings_menu = menu
-        header.pack_end(button)
-
-    def _on_setting_clicked(self, item, _event):
-        item.set_active(not item.get_active())
-        return True   # swallow the release so the menu stays open
+            check = Gtk.CheckButton(label=label)
+            check.set_active(self.settings[key])
+            check.connect("toggled", self._on_setting_toggled, key)
+            box.append(check)
+            self.setting_checks[key] = check
+        popover = Gtk.Popover()
+        popover.set_child(box)
+        button.set_popover(popover)
+        return button
 
     def _on_setting_toggled(self, check, key):
         if self.settings[key] == check.get_active():
             return
         self.settings[key] = check.get_active()
         save_settings(self.settings)
-        self._apply_settings()
+        for doc in self.documents():
+            self._apply_settings_to(doc)
+        self.tree.set_visible(self.settings["show_folder"])
+        self._update_header()
 
-    def _apply_settings(self):
-        self._run_js("window.setOptions({})".format(json.dumps({
-            "lineNumbers": self.settings["line_numbers"],
-            "showWhitespace": self.settings["show_whitespace"],
-        })))
-        self._update_count()
+    def _apply_settings_to(self, doc):
+        doc.view.set_show_line_numbers(self.settings["line_numbers"])
+        doc.view.set_show_whitespace(self.settings["show_whitespace"])
+        doc.view.set_font_size(self.font_size)
+        doc.set_show_memo(self.settings["show_memo"])
 
-    def _update_count(self):
-        text = self.text if self.settings["count_newlines"] else self.text.replace("\n", "")
-        self.count_label.set_text("{}字".format(len(text)))
-
-    def _on_load_changed(self, _webview, event):
-        if event == WebKit2.LoadEvent.FINISHED:
-            self._apply_settings()
-
-    def _add_accel(self, accel, key, callback, shift=False):
-        mods = Gdk.ModifierType.CONTROL_MASK
-        if shift:
-            mods |= Gdk.ModifierType.SHIFT_MASK
-        keyval = Gdk.keyval_from_name(key)
-        accel.connect(keyval, mods, Gtk.AccelFlags.VISIBLE, lambda *_a: callback())
-
-    def _run_js(self, script):
-        # evaluate_javascript() exists from WebKitGTK 2.40; older 4.0 builds only
-        # provide the deprecated run_javascript().
-        if hasattr(self.webview, "evaluate_javascript"):
-            self.webview.evaluate_javascript(script, -1, None, None, None, None, None)
-        else:
-            self.webview.run_javascript(script, None, None, None)
-
-    def _update_title(self):
-        name = os.path.basename(self.current_path) if self.current_path else "無題"
-        mark = " *" if self.modified else ""
-        self.header.set_title("縦書きノート")
-        self.header.set_subtitle(name + mark)
-
-    def _on_js_message(self, _manager, result):
-        payload = json.loads(result.get_js_value().to_string())
-        if payload.get("type") == "debug":
-            self._write_debug_report(payload.get("report", ""))
+    def _update_header(self):
+        doc = self.current()
+        if doc is None:
             return
-        if payload.get("type") != "changed":
-            return
-        # The editor mirrors its whole buffer on every edit, so saving never has
-        # to wait for a round trip to JavaScript.
-        self.text = payload.get("text", "")
-        self._update_count()
-        if not self.modified:
-            self.modified = True
-            self._update_title()
+        self.subtitle.set_text(doc.label)
+        self.count_label.set_text(
+            "{}字".format(doc.char_count(self.settings["count_newlines"])))
 
-    def _write_debug_report(self, report):
-        path = os.path.join(GLib.get_home_dir(), "tate-note-layout.txt")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(report)
-        except OSError as e:
-            self._error_dialog("診断情報を書き出せませんでした: {}".format(e))
-            return
-        dialog = Gtk.MessageDialog(
-            transient_for=self, modal=True,
-            message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.OK,
-            text="レイアウト診断を書き出しました",
-        )
-        dialog.format_secondary_text(path)
-        dialog.run()
-        dialog.destroy()
+    def zoom(self, delta):
+        self.font_size = max(8.0, min(96.0, self.font_size + delta))
+        for doc in self.documents():
+            doc.view.set_font_size(self.font_size)
 
-    def _write_content(self, path):
-        text = self.text
-        if text:
-            text += "\n"
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text)
-        except OSError as e:
-            self._error_dialog("保存に失敗しました: {}".format(e))
-            return False
-        self.current_path = path
-        self.modified = False
-        self._update_title()
-        return True
+    # ---- shortcuts -------------------------------------------------------
 
-    def _error_dialog(self, message):
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.ERROR,
-            buttons=Gtk.ButtonsType.OK,
-            text=message,
-        )
-        dialog.run()
-        dialog.destroy()
+    def _install_shortcuts(self):
+        # Typing and caret keys belong to the view; these are window commands.
+        for accel, handler in (("<Control>t", self.action_new),
+                               ("<Control>n", self.action_new),
+                               ("<Control>o", self.action_open),
+                               ("<Control>s", self.action_save),
+                               ("<Control><Shift>s", self.action_save_as),
+                               ("<Control>w", self.action_close_tab),
+                               ("<Control>f", self.action_find),
+                               ("<Control>g", self.action_find_next),
+                               ("<Control><Shift>g", self.action_find_previous),
+                               ("<Control>Page_Down", self.action_next_tab),
+                               ("<Control>Page_Up", self.action_prev_tab)):
+            trigger = Gtk.ShortcutTrigger.parse_string(accel)
+            action = Gtk.CallbackAction.new(
+                lambda _w, _a, fn=handler: (fn(), True)[1])
+            self.add_shortcut(Gtk.Shortcut.new(trigger, action))
 
-    def _confirm_discard(self):
-        if not self.modified:
-            return True
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.NONE,
-            text="変更を保存しますか？",
-        )
-        dialog.add_buttons(
-            "破棄", Gtk.ResponseType.NO,
-            "キャンセル", Gtk.ResponseType.CANCEL,
-            "保存", Gtk.ResponseType.YES,
-        )
-        response = dialog.run()
-        dialog.destroy()
-        if response == Gtk.ResponseType.YES:
-            return self.action_save()
-        return response == Gtk.ResponseType.NO
+    def action_find(self):
+        doc = self.current()
+        if doc is not None:
+            doc.search.open()
+
+    def action_find_next(self):
+        doc = self.current()
+        if doc is not None and doc.search.get_reveal_child():
+            doc.search.step(1)
+
+    def action_find_previous(self):
+        doc = self.current()
+        if doc is not None and doc.search.get_reveal_child():
+            doc.search.step(-1)
+
+    def action_next_tab(self):
+        count = self.notebook.get_n_pages()
+        if count > 1:
+            self.notebook.set_current_page(
+                (self.notebook.get_current_page() + 1) % count)
+
+    def action_prev_tab(self):
+        count = self.notebook.get_n_pages()
+        if count > 1:
+            self.notebook.set_current_page(
+                (self.notebook.get_current_page() - 1) % count)
+
+    def action_close_tab(self):
+        doc = self.current()
+        if doc is not None:
+            self.close_tab(doc)
+
+    # ---- files -----------------------------------------------------------
 
     def action_new(self):
-        if not self._confirm_discard():
-            return
-        self._set_content("")
-        self.current_path = None
-        self._update_title()
-
-    def _set_content(self, text):
-        self.text = text
-        self.modified = False
-        self._update_count()
-        self._run_js("window.setContent({})".format(json.dumps(text)))
+        self.new_tab()
 
     def action_open(self):
-        if not self._confirm_discard():
-            return
-        dialog = Gtk.FileChooserDialog(
-            title="ファイルを開く",
-            transient_for=self,
-            action=Gtk.FileChooserAction.OPEN,
-        )
-        dialog.add_buttons(
-            "キャンセル", Gtk.ResponseType.CANCEL,
-            "開く", Gtk.ResponseType.OK,
-        )
+        dialog = Gtk.FileChooserNative.new(
+            "ファイルを開く", self, Gtk.FileChooserAction.OPEN, "開く", "キャンセル")
         text_filter = Gtk.FileFilter()
         text_filter.set_name("テキストファイル (*.txt)")
         text_filter.add_pattern("*.txt")
         dialog.add_filter(text_filter)
-        all_filter = Gtk.FileFilter()
-        all_filter.set_name("すべてのファイル")
-        all_filter.add_pattern("*")
-        dialog.add_filter(all_filter)
+        every = Gtk.FileFilter()
+        every.set_name("すべてのファイル")
+        every.add_pattern("*")
+        dialog.add_filter(every)
+        dialog.connect("response", self._on_open_response)
+        dialog.show()
+        self._open_dialog = dialog          # keep it alive
 
-        if dialog.run() == Gtk.ResponseType.OK:
-            path = dialog.get_filename()
-            self._load_file(path)
+    def _on_open_response(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile is not None:
+                self.open_path(gfile.get_path())
         dialog.destroy()
+        self._open_dialog = None
 
-    def _load_file(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
-        except (OSError, UnicodeDecodeError) as e:
-            self._error_dialog("開けませんでした: {}".format(e))
-            return
-        self._set_content(text.rstrip("\n"))
-        self.current_path = path
-        self._update_title()
+    def open_path(self, path):
+        """Bring the file forward if it is already open, otherwise add a tab."""
+        for doc in self.documents():
+            if doc.path == path:
+                self.notebook.set_current_page(self.notebook.page_num(doc))
+                self._focus_current()
+                return doc
+        return self.new_tab(path)
+
+    def action_open_folder(self):
+        dialog = Gtk.FileChooserNative.new(
+            "フォルダを開く", self, Gtk.FileChooserAction.SELECT_FOLDER,
+            "開く", "キャンセル")
+        dialog.connect("response", self._on_folder_response)
+        dialog.show()
+        self._folder_dialog = dialog
+
+    def _on_folder_response(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile is not None:
+                self.show_folder(gfile.get_path())
+        dialog.destroy()
+        self._folder_dialog = None
+
+    def show_folder(self, path):
+        """Open a folder in the tree, revealing the pane if it was hidden."""
+        self.tree.set_root(path)
+        self.settings["show_folder"] = True
+        self.settings["last_folder"] = path
+        save_settings(self.settings)
+        self.tree.set_visible(True)
+        if "show_folder" in self.setting_checks:
+            self.setting_checks["show_folder"].set_active(True)
 
     def action_save(self):
-        if not self.current_path:
-            return self.action_save_as()
-        return self._write_content(self.current_path)
+        doc = self.current()
+        if doc is None:
+            return
+        if not doc.path:
+            self.action_save_as()
+            return
+        self._write(doc, doc.path)
 
     def action_save_as(self):
-        dialog = Gtk.FileChooserDialog(
-            title="名前を付けて保存",
-            transient_for=self,
-            action=Gtk.FileChooserAction.SAVE,
-        )
-        dialog.add_buttons(
-            "キャンセル", Gtk.ResponseType.CANCEL,
-            "保存", Gtk.ResponseType.OK,
-        )
-        dialog.set_do_overwrite_confirmation(True)
-        dialog.set_current_name(
-            os.path.basename(self.current_path) if self.current_path else "無題.txt"
-        )
-        if self.current_path:
-            dialog.set_current_folder(os.path.dirname(self.current_path))
+        doc = self.current()
+        if doc is None:
+            return
+        dialog = Gtk.FileChooserNative.new(
+            "名前を付けて保存", self, Gtk.FileChooserAction.SAVE, "保存", "キャンセル")
+        dialog.set_current_name(doc.title if doc.path else "無題.txt")
+        dialog.connect("response", self._on_save_response, doc)
+        dialog.show()
+        self._save_dialog = dialog
 
-        saved = False
-        if dialog.run() == Gtk.ResponseType.OK:
-            path = dialog.get_filename()
-            if not path.lower().endswith(".txt"):
-                path += ".txt"
-            saved = self._write_content(path)
+    def _on_save_response(self, dialog, response, doc):
+        if response == Gtk.ResponseType.ACCEPT:
+            gfile = dialog.get_file()
+            if gfile is not None:
+                path = gfile.get_path()
+                if not path.lower().endswith(".txt"):
+                    path += ".txt"
+                self._write(doc, path)
         dialog.destroy()
-        return saved
+        self._save_dialog = None
 
-    def action_zoom(self, delta):
-        self._run_js(
-            "window.setFontSize(Math.max(12, Math.min(64, window.getFontSize() + {})))".format(delta)
-        )
+    def _write(self, doc, path):
+        try:
+            doc.save(path)
+        except OSError as e:
+            self._error("保存に失敗しました: {}".format(e))
+            return False
+        return True
 
-    def _on_delete_event(self, _widget, _event):
-        return not self._confirm_discard()
+    # ---- dialogs ---------------------------------------------------------
+
+    def _confirm_discard(self, doc):
+        # Placeholder until the discard dialog lands; never lose work silently.
+        return not doc.modified
+
+    def _error(self, message):
+        dialog = Gtk.AlertDialog()
+        dialog.set_message(message)
+        dialog.show(self)
 
 
 class TateNoteApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.HANDLES_OPEN)
         self.window = None
-        self._pending_open_path = None
+        self._pending = []
 
     def do_activate(self):
-        if not self.window:
+        if self.window is None:
             self.window = TateNoteWindow(self)
-            if self._pending_open_path:
-                self.window._load_file(self._pending_open_path)
-                self._pending_open_path = None
+            for path in self._pending:
+                self.window.open_path(path)
+            self._pending = []
         self.window.present()
 
-    def do_open(self, files, _n_files, _hint):
-        self._pending_open_path = files[0].get_path()
-        self.activate()
+    def do_open(self, files, _n, _hint):
+        paths = [f.get_path() for f in files if f.get_path()]
+        if self.window is None:
+            self._pending = paths
+            self.activate()
+        else:
+            for path in paths:
+                self.window.open_path(path)
+            self.window.present()
 
 
 def main():
-    app = TateNoteApp()
-    return app.run(sys.argv)
+    return TateNoteApp().run(sys.argv)
 
 
 if __name__ == "__main__":

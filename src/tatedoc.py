@@ -13,6 +13,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gdk, GObject, Gtk
 
+from tatesearch import SearchBar
 from tateview import VerticalTextView
 
 MEMO_WIDTH = 240
@@ -83,8 +84,11 @@ class Document(Gtk.Paned):
         self.scrollbar.set_direction(Gtk.TextDirection.RTL)
         self.view.adjustment.connect("changed", lambda _a: self._sync_scrollbar())
 
+        self.search = SearchBar(self.view)
+
         editor = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor.append(self.view)
+        editor.append(self.search)
         editor.append(self.scrollbar)
         self.set_start_child(editor)
         self.set_resize_start_child(True)
@@ -164,6 +168,8 @@ class Document(Gtk.Paned):
         if not self.modified:
             self.modified = True
         self.view.scroll_caret_into_view()
+        # Matches move as the text does; keep the highlights honest.
+        self.search.refresh()
         self.emit("state-changed")
 
     def _sync_scrollbar(self):

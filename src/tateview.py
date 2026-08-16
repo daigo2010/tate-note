@@ -33,6 +33,8 @@ LINE_NUMBER = rgba("#b5ac99")
 MARKER = rgba("#cbc0a9")
 SPACE_DOT = rgba("#c0b6a0")
 SELECTION = rgba("#d9cdb4")
+MATCH = rgba("#e8dfae")
+MATCH_CURRENT = rgba("#f0c98a")
 
 
 class VerticalTextView(Gtk.Widget):
@@ -60,6 +62,8 @@ class VerticalTextView(Gtk.Widget):
         self._doc = VerticalLayout(text)
         self._show_line_numbers = False
         self._show_whitespace = False
+        self._matches = []              # (start, end) character indices
+        self._current_match = -1
         self._scroll = 0.0
 
         self._im = Gtk.IMMulticontext()
@@ -182,6 +186,91 @@ class VerticalTextView(Gtk.Widget):
         self._sync()
         if self.get_width() > 0:
             self.scroll_caret_into_view()
+
+    # ---- search ----------------------------------------------------------
+
+    @property
+    def matches(self):
+        return list(self._matches)
+
+    @property
+    def current_match(self):
+        return self._current_match
+
+    def find(self, query, case_sensitive=False):
+        """Locate every occurrence; returns how many there are."""
+        self._matches = []
+        self._current_match = -1
+        if query:
+            self._matches = self._scan(query, case_sensitive)
+        self.queue_draw()
+        return len(self._matches)
+
+    def _scan(self, query, case_sensitive):
+        text = self._text
+        span = len(query)
+        if case_sensitive:
+            found, start = [], 0
+            while True:
+                at = text.find(query, start)
+                if at < 0:
+                    break
+                found.append((at, at + span))
+                start = at + span
+            return found
+        lowered = text.lower()
+        if len(lowered) == len(text):
+            # Same length, so positions in the folded copy still address the
+            # original text and the fast path is safe.
+            needle, found, start = query.lower(), [], 0
+            while True:
+                at = lowered.find(needle, start)
+                if at < 0:
+                    break
+                found.append((at, at + span))
+                start = at + span
+            return found
+        # Rare scripts fold to a different length; compare slice by slice so the
+        # indices keep pointing at the real characters.
+        needle, found, i = query.lower(), [], 0
+        while i <= len(text) - span:
+            if text[i:i + span].lower() == needle:
+                found.append((i, i + span))
+                i += span
+            else:
+                i += 1
+        return found
+
+    def select_match(self, index):
+        """Show one match: select it, and bring it into view."""
+        if not self._matches:
+            return
+        index %= len(self._matches)
+        self._current_match = index
+        start, end = self._matches[index]
+        self._anchor = start
+        self._caret = end
+        self._sync()
+        self.scroll_caret_into_view()
+
+    def match_after_caret(self, backwards=False):
+        """Index of the match nearest the caret, for starting a search there."""
+        if not self._matches:
+            return -1
+        if backwards:
+            for i in range(len(self._matches) - 1, -1, -1):
+                if self._matches[i][0] < self._caret:
+                    return i
+            return len(self._matches) - 1
+        for i, (start, _end) in enumerate(self._matches):
+            if start >= self._caret:
+                return i
+        return 0
+
+    def clear_search(self):
+        self._matches = []
+        self._current_match = -1
+        self.queue_draw()
 
     # ---- selection -------------------------------------------------------
 
@@ -501,6 +590,7 @@ class VerticalTextView(Gtk.Widget):
         snapshot.translate(Graphene.Point().init(origin_x + self._scroll, origin_y))
         snapshot.rotate(90.0)
 
+        self._draw_matches(snapshot)
         self._draw_selection(snapshot)
         if self._show_whitespace:
             self._draw_whitespace(snapshot)
@@ -513,6 +603,13 @@ class VerticalTextView(Gtk.Widget):
         # the digits stand upright and nothing here can perturb the text.
         if self._show_line_numbers:
             self._draw_line_numbers(snapshot, origin_x, origin_y)
+
+    def _draw_matches(self, snapshot):
+        for index, (start, end) in enumerate(self._matches):
+            colour = MATCH_CURRENT if index == self._current_match else MATCH
+            for x, y, w, h in self._doc.selection_rects(self._byte(start),
+                                                        self._byte(end)):
+                snapshot.append_color(colour, Graphene.Rect().init(x, y, w, h))
 
     def _draw_selection(self, snapshot):
         span = self.selection

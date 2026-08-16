@@ -3,11 +3,13 @@ Version: __VERSION__
 Section: editors
 Priority: optional
 Architecture: all
-Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0
+Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-pango-1.0, fonts-noto-cjk
 Maintainer: d.suganuma <ds20100531@gmail.com>
 Installed-Size: __SIZE__
 Description: Vertical writing (tategaki) text editor
- A lightweight desktop text editor for Ubuntu that renders text
- top-to-bottom, right-to-left in traditional Japanese vertical
- writing (tategaki) style. Supports opening and saving plain text
- files.
+ A desktop text editor for Ubuntu that writes top-to-bottom and
+ right-to-left in traditional Japanese vertical style. Text is laid
+ out with Pango and drawn by the application itself, so the caret,
+ line numbers and whitespace marks are placed exactly. Documents open
+ in tabs, each with a memo saved alongside it, and a folder pane can
+ browse a whole manuscript.

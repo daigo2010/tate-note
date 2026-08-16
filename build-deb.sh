@@ -38,12 +38,13 @@ rm -rf "$PKG_ROOT"
 mkdir -p \
   "$PKG_ROOT/DEBIAN" \
   "$PKG_ROOT/usr/bin" \
-  "$PKG_ROOT/usr/share/tate-note/assets" \
+  "$PKG_ROOT/usr/share/tate-note" \
   "$PKG_ROOT/usr/share/applications" \
   "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps"
 
 install -m 755 "$ROOT_DIR/src/tate-note" "$PKG_ROOT/usr/bin/tate-note"
-install -m 644 "$ROOT_DIR/src/assets/"* "$PKG_ROOT/usr/share/tate-note/assets/"
+# The editor is split across modules; the launcher looks for them here.
+install -m 644 "$ROOT_DIR/src/"tate*.py "$PKG_ROOT/usr/share/tate-note/"
 install -m 644 "$ROOT_DIR/src/tate-note.svg" "$PKG_ROOT/usr/share/icons/hicolor/scalable/apps/tate-note.svg"
 install -m 644 "$ROOT_DIR/packaging/tate-note.desktop" "$PKG_ROOT/usr/share/applications/tate-note.desktop"
 
