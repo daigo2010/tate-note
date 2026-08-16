@@ -65,6 +65,11 @@
 
   <url type="homepage">https://github.com/daigo2010/tate-note</url>
   <url type="bugtracker">https://github.com/daigo2010/tate-note/issues</url>
+  <url type="vcs-browser">https://github.com/daigo2010/tate-note</url>
+
+  <!-- snapcraft turns this into the store listing's contact field. An address
+       here would be published with it, so it points at the issue tracker. -->
+  <update_contact>https://github.com/daigo2010/tate-note/issues</update_contact>
 
   <provides>
     <binary>tate-note</binary>
@@ -82,7 +87,7 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
-    <release version="0.0.4" date="2026-08-16">
+    <release version="0.0.5" date="2026-08-16">
       <description>
         <p>改行コードの保持と切り替え、元に戻す / やり直す、置換を追加しました。</p>
         <p xml:lang="en">
