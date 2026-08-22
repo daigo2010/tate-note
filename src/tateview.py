@@ -18,24 +18,8 @@ gi.require_version("Pango", "1.0")
 from gi.repository import GLib, GObject, Gdk, Gtk, Graphene, Pango
 
 from tatelayout import VerticalLayout, DEFAULT_FONT
+from tatetheme import COLOURS
 from tateundo import Edit, UndoStack
-
-
-def rgba(hexcode):
-    colour = Gdk.RGBA()
-    colour.parse(hexcode)
-    return colour
-
-
-PAPER = rgba("#f4f1ea")
-INK = rgba("#2b2b2b")
-CARET = rgba("#b3401f")
-LINE_NUMBER = rgba("#b5ac99")
-MARKER = rgba("#cbc0a9")
-SPACE_DOT = rgba("#c0b6a0")
-SELECTION = rgba("#d9cdb4")
-MATCH = rgba("#e8dfae")
-MATCH_CURRENT = rgba("#f0c98a")
 
 
 class VerticalTextView(Gtk.Widget):
@@ -675,7 +659,7 @@ class VerticalTextView(Gtk.Widget):
             return
 
         self._reflow(width, height)
-        snapshot.append_color(PAPER, Graphene.Rect().init(0, 0, width, height))
+        snapshot.append_color(COLOURS.paper, Graphene.Rect().init(0, 0, width, height))
 
         origin_x, origin_y = self._origin(width)
         snapshot.save()
@@ -686,7 +670,7 @@ class VerticalTextView(Gtk.Widget):
         self._draw_selection(snapshot)
         if self._show_whitespace:
             self._draw_whitespace(snapshot)
-        snapshot.append_layout(self._doc.layout, INK)
+        snapshot.append_layout(self._doc.layout, COLOURS.ink)
         self._draw_caret(snapshot)
 
         snapshot.restore()
@@ -698,7 +682,7 @@ class VerticalTextView(Gtk.Widget):
 
     def _draw_matches(self, snapshot):
         for index, (start, end) in enumerate(self._matches):
-            colour = MATCH_CURRENT if index == self._current_match else MATCH
+            colour = COLOURS.match_current if index == self._current_match else COLOURS.match
             for x, y, w, h in self._doc.selection_rects(self._byte(start),
                                                         self._byte(end)):
                 snapshot.append_color(colour, Graphene.Rect().init(x, y, w, h))
@@ -709,13 +693,13 @@ class VerticalTextView(Gtk.Widget):
             return
         start, end = span
         for x, y, w, h in self._doc.selection_rects(self._byte(start), self._byte(end)):
-            snapshot.append_color(SELECTION, Graphene.Rect().init(x, y, w, h))
+            snapshot.append_color(COLOURS.selection, Graphene.Rect().init(x, y, w, h))
 
     def _draw_caret(self, snapshot):
         index = self._byte(self._caret) + len(
             self._preedit[:self._preedit_caret].encode("utf-8"))
         x, y, w, h = self._doc.caret_rect(index)
-        snapshot.append_color(CARET, Graphene.Rect().init(x, y, max(w, 2.0), h))
+        snapshot.append_color(COLOURS.caret, Graphene.Rect().init(x, y, max(w, 2.0), h))
 
     def _number_layout(self, text, size):
         layout = Pango.Layout.new(self.get_pango_context())
@@ -744,7 +728,7 @@ class VerticalTextView(Gtk.Widget):
             snapshot.save()
             snapshot.translate(Graphene.Point().init(
                 centre_x - width / 2.0, origin_y - gutter + (gutter - height) / 2.0))
-            snapshot.append_layout(layout, LINE_NUMBER)
+            snapshot.append_layout(layout, COLOURS.line_number)
             snapshot.restore()
 
     def _draw_whitespace(self, snapshot):
@@ -756,25 +740,25 @@ class VerticalTextView(Gtk.Widget):
                 x, y, _w, h = self._doc.caret_rect(index)
                 arm = self._doc.em * 0.30
                 snapshot.append_color(
-                    MARKER, Graphene.Rect().init(x, y + h * 0.5 - 1, arm, 2))
+                    COLOURS.marker, Graphene.Rect().init(x, y + h * 0.5 - 1, arm, 2))
                 snapshot.append_color(
-                    MARKER, Graphene.Rect().init(x + arm - 2, y + h * 0.5 - 1, 2, arm))
+                    COLOURS.marker, Graphene.Rect().init(x + arm - 2, y + h * 0.5 - 1, 2, arm))
             elif ch in (" ", "　", "\t"):
                 x, y, _w, h = self._doc.caret_rect(index)
                 nx, _ny, _nw, _nh = self._doc.caret_rect(index + span)
                 length = max(nx - x, 2.0)
                 if ch == "\t":
                     snapshot.append_color(
-                        MARKER, Graphene.Rect().init(x, y + h / 2 - 1, length, 2))
+                        COLOURS.marker, Graphene.Rect().init(x, y + h / 2 - 1, length, 2))
                 elif ch == "　":
                     self._stroke_rect(snapshot, x + 1, y + 2, length - 2, h - 4)
                 else:
                     snapshot.append_color(
-                        SPACE_DOT,
+                        COLOURS.space_dot,
                         Graphene.Rect().init(x + length / 2 - 1.5, y + h / 2 - 1.5, 3, 3))
             index += span
 
     def _stroke_rect(self, snapshot, x, y, w, h):
         for rect in ((x, y, w, 1), (x, y + h - 1, w, 1),
                      (x, y, 1, h), (x + w - 1, y, 1, h)):
-            snapshot.append_color(MARKER, Graphene.Rect().init(*rect))
+            snapshot.append_color(COLOURS.marker, Graphene.Rect().init(*rect))

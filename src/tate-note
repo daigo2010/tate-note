@@ -27,7 +27,8 @@ _INSTALLED = os.environ.get("SNAP", "") + "/usr/share/tate-note"
 sys.path.insert(0, _HERE if os.path.exists(os.path.join(_HERE, "tateview.py"))
                 else _INSTALLED)
 
-from tatedoc import NEWLINES, Document
+from tatedoc import NEWLINES, Document, refresh_css
+from tatetheme import COLOURS, THEMES, SystemTheme
 from tatetree import FolderTree
 
 APP_ID = "net.tate_note.TateNote"
@@ -40,6 +41,17 @@ DEFAULT_SETTINGS = {
     "show_folder": False,
 }
 
+# Follows the desktop unless the reader asks for one or the other.
+DEFAULT_THEME = "system"
+
+
+def _theme_installed(name):
+    """Is this GTK theme present? Overriding to a missing one strands the UI."""
+    roots = [os.path.join(GLib.get_user_data_dir(), "themes"),
+             os.path.expanduser("~/.themes")]
+    roots += [os.path.join(d, "themes") for d in GLib.get_system_data_dirs()]
+    return any(os.path.isdir(os.path.join(root, name)) for root in roots)
+
 
 def settings_path():
     return os.path.join(GLib.get_user_config_dir(), "tate-note", "settings.json")
@@ -47,6 +59,7 @@ def settings_path():
 
 def load_settings():
     settings = dict(DEFAULT_SETTINGS)
+    settings["theme"] = DEFAULT_THEME
     try:
         with open(settings_path(), "r", encoding="utf-8") as f:
             stored = json.load(f)
@@ -56,9 +69,11 @@ def load_settings():
         for key in DEFAULT_SETTINGS:
             if isinstance(stored.get(key), bool):
                 settings[key] = stored[key]
-        # Not a toggle, so it is carried across separately.
+        # Not toggles, so these are carried across separately.
         if isinstance(stored.get("last_folder"), str):
             settings["last_folder"] = stored["last_folder"]
+        if stored.get("theme") in THEMES:
+            settings["theme"] = stored["theme"]
     return settings
 
 
@@ -88,6 +103,15 @@ class TateNoteWindow(Gtk.ApplicationWindow):
 
         self.settings = load_settings()
         self.font_size = 22.0
+
+        # Settle the palette before the first document exists, so nothing is
+        # ever built in the wrong colours and repainted.
+        gtk_settings = Gtk.Settings.get_default()
+        self._system_gtk_theme = (
+            gtk_settings.props.gtk_theme_name if gtk_settings else None)
+        self.system_theme = SystemTheme()
+        self.system_theme.connect("changed", lambda _s: self._apply_theme())
+        self._apply_theme()
 
         self.notebook = Gtk.Notebook()
         self.notebook.set_scrollable(True)
@@ -310,6 +334,27 @@ class TateNoteWindow(Gtk.ApplicationWindow):
             check.connect("toggled", self._on_setting_toggled, key)
             box.append(check)
             self.setting_checks[key] = check
+
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        heading = Gtk.Label(label="外観", xalign=0.0)
+        heading.add_css_class("dim-label")
+        box.append(heading)
+
+        self.theme_checks = {}
+        group = None
+        for choice, label in (("system", "システムに合わせる"),
+                              ("light", "明るい"),
+                              ("dark", "暗い")):
+            check = Gtk.CheckButton(label=label)
+            if group is None:
+                group = check
+            else:
+                check.set_group(group)
+            check.set_active(self.settings.get("theme", DEFAULT_THEME) == choice)
+            check.connect("toggled", self._on_theme_chosen, choice)
+            box.append(check)
+            self.theme_checks[choice] = check
+
         popover = Gtk.Popover()
         popover.set_child(box)
         button.set_popover(popover)
@@ -324,6 +369,52 @@ class TateNoteWindow(Gtk.ApplicationWindow):
             self._apply_settings_to(doc)
         self.tree.set_visible(self.settings["show_folder"])
         self._update_header()
+
+    def _apply_theme(self):
+        """Settle on light or dark, and put it everywhere at once."""
+        choice = self.settings.get("theme", DEFAULT_THEME)
+        if choice == "system":
+            dark = self.system_theme.prefers_dark
+        else:
+            dark = choice == "dark"
+        COLOURS.set_dark(dark)
+        refresh_css()
+        self._match_chrome(dark, following=choice == "system")
+        # Called once before the notebook exists, to settle the palette before
+        # anything is built with it; there is nothing to repaint yet.
+        if getattr(self, "notebook", None) is not None:
+            for doc in self.documents():
+                doc.view.queue_draw()
+
+    def _match_chrome(self, dark, following):
+        """Bring the window chrome into line with the page.
+
+        Following the desktop, the chrome is already right and is left alone.
+        Overriding it, the headerbar would otherwise disagree with the paper
+        under it - so the theme's own light or dark variant is asked for, and
+        only if that variant is actually installed.
+        """
+        settings = Gtk.Settings.get_default()
+        if settings is None:
+            return
+        settings.props.gtk_application_prefer_dark_theme = dark
+        if following:
+            if self._system_gtk_theme is not None:
+                settings.props.gtk_theme_name = self._system_gtk_theme
+            return
+        base = (self._system_gtk_theme or "").removesuffix("-dark")
+        if not base:
+            return
+        wanted = base + "-dark" if dark else base
+        if wanted != settings.props.gtk_theme_name and _theme_installed(wanted):
+            settings.props.gtk_theme_name = wanted
+
+    def _on_theme_chosen(self, check, choice):
+        if not check.get_active() or self.settings.get("theme") == choice:
+            return
+        self.settings["theme"] = choice
+        save_settings(self.settings)
+        self._apply_theme()
 
     def _apply_settings_to(self, doc):
         doc.view.set_show_line_numbers(self.settings["line_numbers"])

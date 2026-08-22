@@ -14,6 +14,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GObject, Gtk
 
 from tatesearch import SearchBar
+from tatetheme import COLOURS
 from tateview import VerticalTextView
 
 MEMO_WIDTH = 240
@@ -39,36 +40,46 @@ def detect_newline(raw):
     return ending if most > 0 else "\n"
 
 # The editor draws its own paper; left to the system theme the memo beside it
-# would come out dark and the pair would look like two different applications.
-MEMO_CSS = b"""
+# would come out of step with the page. The colours come from the palette, so
+# the memo follows the text into dark and back.
+_css_provider = None
+
+
+def _memo_css():
+    c = COLOURS.hex
+    return ("""
 .tate-memo, .tate-memo text {
-  background-color: #f4f1ea;
-  color: #2b2b2b;
+  background-color: %(memo_bg)s;
+  color: %(memo_fg)s;
 }
 .tate-memo-heading {
-  background-color: #ebe5d8;
-  color: #6f6759;
+  background-color: %(heading_bg)s;
+  color: %(heading_fg)s;
   font-size: 0.85em;
 }
 .tate-memo-side {
-  border-left: 1px solid #ddd5c4;
+  border-left: 1px solid %(border)s;
 }
-"""
-_css_installed = False
+""" % c).encode("utf-8")
 
 
 def _install_css():
-    global _css_installed
-    if _css_installed:
-        return
+    """Put the palette's colours on the display, replacing any earlier set."""
+    global _css_provider
     display = Gdk.Display.get_default()
     if display is None:
         return
-    provider = Gtk.CssProvider()
-    provider.load_from_data(MEMO_CSS)
-    Gtk.StyleContext.add_provider_for_display(
-        display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    _css_installed = True
+    if _css_provider is None:
+        _css_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            display, _css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _css_provider.load_from_data(_memo_css())
+
+
+def refresh_css():
+    """Re-issue the stylesheet after the palette has changed."""
+    if _css_provider is not None:
+        _css_provider.load_from_data(_memo_css())
 
 
 def memo_path_for(path):
